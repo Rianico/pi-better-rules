@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>pi-rules logic demo — does the state model feel right?</title>
+    <style>
+      body {
+        font-family: -apple-system, system-ui, sans-serif;
+        max-width: 960px;
+        margin: 2rem auto;
+        padding: 0 1.5rem;
+        color: #1a1a1a;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.4rem;
+      }
+      h2 {
+        font-size: 1.1rem;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 0.3rem;
+      }
+      .intro {
+        background: #f6f8fa;
+        border-left: 4px solid #2962ff;
+        padding: 0.8rem 1rem;
+      }
+      .panels {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      .panel {
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 0.7rem 1rem;
+      }
+      .panel h3 {
+        margin: 0.2rem 0 0.5rem;
+        font-size: 0.95rem;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 0.85rem;
+      }
+      th,
+      td {
+        border: 1px solid #e0e0e0;
+        padding: 0.25rem 0.5rem;
+        text-align: left;
+      }
+      tr.active-rule td {
+        background: #e8f5e9;
+      }
+      .warnlog {
+        color: #888;
+        font-size: 0.85rem;
+      } /* dimmed warnings — the extra point */
+      .prompt-render {
+        background: #fafafa;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        padding: 0.5rem 0.8rem;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+      }
+      button {
+        margin: 0.15rem;
+        padding: 0.35rem 0.7rem;
+        cursor: pointer;
+      }
+      .tabs button.on {
+        background: #2962ff;
+        color: #fff;
+        border: 1px solid #2962ff;
+      }
+      .step {
+        margin: 0.3rem 0;
+      }
+      .step.done {
+        opacity: 0.45;
+      }
+      .changed-flash {
+        color: #b26a00;
+        font-weight: bold;
+      }
+      .mono {
+        font-family: ui-monospace, monospace;
+        font-size: 0.82rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>pi-rules logic demo</h1>
+    <div class="intro">
+      <b>Question:</b> does the tier × paths × checksum state model behave the
+      way we decided? <i>system</i> = full text injected, <i>general</i> = index
+      line; <i>paths</i> decides <i>when</i>; activation accumulates over
+      Read+Write; <kbd>/reload</kbd> only refreshes checksum-changed files.
+      Press buttons and watch the state. React when something feels wrong.
+    </div>
+
+    <h2>Walkthroughs</h2>
+    <div class="tabs" id="tabs"></div>
+    <div id="walkdesc"></div>
+    <div id="walksteps"></div>
+
+    <h2>Free play</h2>
+    <div id="freeplay"></div>
+
+    <h2>Current state <span id="flash"></span></h2>
+    <div class="panels">
+      <div class="panel">
+        <h3>Loaded rules (green = active this prompt)</h3>
+        <div id="rules"></div>
+      </div>
+      <div class="panel">
+        <h3>Session files touched (Read+Write)</h3>
+        <div id="touched"></div>
+      </div>
+      <div class="panel">
+        <h3>Checksum snapshot (disk-persisted)</h3>
+        <div id="checksums"></div>
+      </div>
+      <div class="panel">
+        <h3>Simulated disk (edit me via free play)</h3>
+        <div id="disk"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Rendered system prompt (latest user message)</h3>
+      <div class="prompt-render" id="prompt">— no prompt yet —</div>
+    </div>
+    <div class="panel">
+      <h3>Warnings (dimmed by design)</h3>
+      <div class="warnlog" id="warnings">— none —</div>
+    </div>
+    <div class="panel">
+      <h3>History (compaction replaces this with a summary)</h3>
+      <div class="mono" id="history">— empty —</div>
+    </div>
+
+    <script>
+      /* ============ PURE LOGIC MODULE (no DOM — liftable into the real extension) ============ */
+      const MODES = {
+        pi: "Read+Write (decided)",
+        claude: "Read-only (Claude parity, buggy)",
+      };
+
+      function checksum(s) {
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+        return h.toString(16);
+      }
+
+      function initialDisk() {
+        return {
+          "code-style.md|global": {
+            text: "# Code style\nUse 2-space indent.",
+            tier: "system",
+            paths: null,
+          },
+          "testing.md|global": {
+            text: "# Testing\nRun vitest before commit.",
+            tier: "general",
+            paths: null,
+          },
+          "api-design.md|project": {
+            text: "# API design\nValidate with Zod.",
+            tier: "system",
+            paths: ["src/api/**/*.ts"],
+          },
+          "migrations.md|project": {
+            text: "# Migrations\nReversible + batched backfills.",
+            tier: "system",
+            paths: ["db/migrate/*.sql"],
+          },
+          "perf-notes.md|project": {
+            text: "# Perf notes\nMeasure before optimizing.",
+            tier: "general",
+            paths: ["src/**/*.ts"],
+          },
+          "frontend/react.md|project": {
+            text: "# React\nColocate hooks with components.",
+            tier: "general",
+            paths: null,
+          },
+          "weird.md|project": {
+            text: "# Weird\nBogus tier below.",
+            tier: "bogus",
+            paths: null,
+          },
+        };
+      }
+
+      function createSession() {
+        return {
+          rules: [],
+          touched: [],
+          checksums: {},
+          disk: initialDisk(),
+          history: [],
+          warnings: [],
+          promptCount: 0,
+          mode: "pi",
+          lastPrompt: null,
+          lastChanged: [],
+        };
+      }
+
+      function expandBraces(p) {
+        const m = p.match(/\{([^{}]*)\}/);
+        if (!m) return [p];
+        return m[1]
+          .split(",")
+          .flatMap((part) =>
+            expandBraces(
+              p.slice(0, m.index) + part + p.slice(m.index + m[0].length),
+            ),
+          );
+      }
+      function globToRegExp(p) {
+        let re = "";
+        for (let i = 0; i < p.length; i++) {
+          const c = p[i];
+          if (c === "*") {
+            if (p[i + 1] === "*") {
+              if (p[i + 2] === "/") {
+                re += "(.*/)?";
+                i += 2;
+              } else {
+                re += ".*";
+                i++;
+              }
+            } else re += "[^/]*";
+          } else if (c === "?") re += "[^/]";
+          else if (c === "[") {
+            const j = p.indexOf("]", i);
+            if (j > i) {
+              re += p.slice(i, j + 1);
+              i = j;
+            } else re += "\\[";
+          } else if (c === "\\" && i + 1 < p.length) re += "\\" + p[++i];
+          else re += /[.+^${}()|]/.test(c) ? "\\" + c : c;
+        }
+        return new RegExp("^" + re + "$");
+      }
+      function globMatch(patterns, file) {
+        // claude semantics (port of the TS sketch)
+        const expanded = patterns.flatMap(expandBraces);
+        const pats = expanded.length > 1000 ? patterns : expanded; // budget: match literally
+        return pats.some((p) => {
+          try {
+            return globToRegExp(p).test(file);
+          } catch (e) {
+            return false;
+          }
+        });
+      }
+      function summaryOf(text) {
+        const m = text.match(/^#\s+(.+)/m);
+        return m ? m[1] : text.split("\n").find((l) => l.trim());
+      }
+
+      function scan(state) {
+        const found = new Map();
+        const warns = [];
+        const order = ["global", "project"];
+        for (const key of Object.keys(state.disk)) {
+          const [rel, scope] = key.split("|");
+          const d = state.disk[key];
+          let tier = d.tier;
+          if (tier !== "system" && tier !== "general") {
+            warns.push(
+              `${rel}: unknown metadata.rule_tier "${d.tier}" — falling back to general`,
+            );
+            tier = "general";
+          }
+          found.set(rel, {
+            rel,
+            scope,
+            tier,
+            paths: d.paths,
+            summary: summaryOf(d.text),
+            text: d.text,
+          });
+        }
+        state.rules = [...found.values()].sort(
+          (a, b) => order.indexOf(a.scope) - order.indexOf(b.scope),
+        );
+        state.checksums = {};
+        for (const key of Object.keys(state.disk))
+          state.checksums[key] = checksum(state.disk[key].text);
+        state.warnings.push(...warns);
+        return state;
+      }
+
+      function isActive(state, r) {
+        if (!r.paths) return true;
+        const files =
+          state.mode === "pi"
+            ? state.touched
+            : state.touched.filter((t) => t.op === "read").map((t) => t.file);
+        const list =
+          state.mode === "pi" ? state.touched.map((t) => t.file) : files;
+        return list.some((f) => globMatch(r.paths, f));
+      }
+
+      function renderPrompt(state, userText) {
+        state.promptCount++;
+        const sys = state.rules.filter(
+          (r) => r.tier === "system" && isActive(state, r),
+        );
+        const gen = state.rules.filter(
+          (r) => r.tier === "general" && isActive(state, r),
+        );
+        let out =
+          `…pi base…\n\n## Rules: system tier (full)\n` +
+          sys.map((r) => `### ${r.rel} [${r.scope}]\n${r.text}`).join("\n\n");
+        if (gen.length)
+          out +=
+            `\n\n## Rules: general tier (index)\n` +
+            gen.map((r) => `- ${r.rel} [${r.scope}] — ${r.summary}`).join("\n");
+        state.lastPrompt = {
+          userText,
+          sys: sys.map((r) => r.rel),
+          gen: gen.map((r) => r.rel),
+          text: out,
+        };
+        state.runOpen = true;
+        state.runBase = {
+          sys: state.lastPrompt.sys,
+          gen: state.lastPrompt.gen,
+        };
+        state.history.push(
+          `P${state.promptCount} user: ${userText}  → system:[${state.lastPrompt.sys}] general:[${state.lastPrompt.gen}]`,
+        );
+        return state;
+      }
+
+      function verify(state) {
+        // /reload + explicit refresh: checksum-gated
+        const changed = [];
+        for (const key of Object.keys(state.disk)) {
+          const sum = checksum(state.disk[key].text);
+          if (state.checksums[key] !== sum) changed.push(key.split("|")[0]);
+        }
+        for (const key of Object.keys(state.checksums))
+          if (!(key in state.disk))
+            changed.push(key.split("|")[0] + " (deleted)");
+        state.lastChanged = [...new Set(changed)];
+        if (state.lastChanged.length) scan(state);
+        return state;
+      }
+
+      function reduce(state, action) {
+        state = structuredClone(state); // purity: fresh state each step
+        state.turns = state.turns || [];
+        state.runBase = state.runBase || { sys: [], gen: [] };
+        if (state.runOpen === undefined) state.runOpen = false;
+        if (state.hook === undefined) state.hook = true;
+        switch (action.type) {
+          case "SCAN":
+            return scan(state);
+          case "MODE":
+            state.mode = action.mode;
+            return state;
+          case "READ":
+            state.touched.push({ op: "read", file: action.file });
+            return state;
+          case "WRITE":
+            state.touched.push({ op: "write", file: action.file });
+            return state;
+          case "PROMPT":
+            return renderPrompt(state, action.text);
+          case "EDIT_DISK":
+            state.disk[action.key].text = action.text;
+            return state;
+          case "ADD_DISK":
+            state.disk[action.key] = action.rule;
+            return state;
+          case "RELOAD":
+          case "REFRESH":
+            return verify(state);
+          case "CORRUPT":
+            state.checksums = { garbage: "zzz" };
+            state.warnings.push(
+              "checksum cache unreadable — treating everything as changed",
+            );
+            return verify(state);
+          case "COMPACT":
+            state.history = [
+              `[summary of ${state.history.length} entries — rule text NOT summarized, re-rendered from cache]`,
+            ];
+            return state;
+          case "TURN": {
+            const n = state.turns.length + 1;
+            if (!state.runOpen) {
+              state.turns.push(`T${n}: no open run — send a prompt first`);
+              return state;
+            }
+            const sysNow = state.rules
+              .filter((r) => r.tier === "system" && isActive(state, r))
+              .map((r) => r.rel);
+            const genNow = state.rules
+              .filter((r) => r.tier === "general" && isActive(state, r))
+              .map((r) => r.rel);
+            const fresh = (now, base) => now.filter((x) => !base.includes(x));
+            const dSys = fresh(sysNow, state.runBase.sys);
+            const dGen = fresh(genNow, state.runBase.gen);
+            if (!dSys.length && !dGen.length)
+              state.turns.push(
+                `T${n}: no newly-activated rules — payload unchanged`,
+              );
+            else if (state.hook)
+              state.turns.push(
+                `T${n}: provider-hook reconciles +system:[${dSys}] +general:[${dGen}]`,
+              );
+            else
+              state.turns.push(
+                `T${n}: MISSING system:[${dSys}] general:[${dGen}] — waits for next prompt (the lag)`,
+              );
+            return state;
+          }
+          case "HOOK":
+            state.hook = action.on;
+            return state;
+          case "RESET": {
+            const fresh = createSession();
+            fresh.mode = state.mode;
+            return scan(fresh);
+          }
+        }
+        return state;
+      }
+      /* ============ THIN SHELL (DOM only below this line) ============ */
+      let S = reduce(createSession(), { type: "SCAN" });
+      const $ = (id) => document.getElementById(id);
+      const clear = (box) => {
+        box.textContent = "";
+        return box;
+      };
+      const row = (text, cls) => {
+        const d = document.createElement("div");
+        if (cls) d.className = cls;
+        d.textContent = text;
+        return d;
+      };
+      function paint(flashMsg) {
+        const table = document.createElement("table");
+        const headRow = document.createElement("tr");
+        ["rule", "tier", "paths"].forEach((h) => {
+          const th = document.createElement("th");
+          th.textContent = h;
+          headRow.appendChild(th);
+        });
+        table.appendChild(headRow);
+        S.rules.forEach((r) => {
+          const active =
+            S.lastPrompt &&
+            (S.lastPrompt.sys.includes(r.rel) ||
+              S.lastPrompt.gen.includes(r.rel));
+          const tr = document.createElement("tr");
+          if (active) tr.className = "active-rule";
+          const tdRule = document.createElement("td");
+          tdRule.textContent = `${r.rel} [${r.scope}]`;
+          tr.appendChild(tdRule);
+          const tdTier = document.createElement("td");
+          tdTier.textContent = r.tier;
+          tr.appendChild(tdTier);
+          const tdPaths = document.createElement("td");
+          tdPaths.className = "mono";
+          tdPaths.textContent = r.paths ? r.paths.join(", ") : "— always —";
+          tr.appendChild(tdPaths);
+          table.appendChild(tr);
+        });
+        clear($("rules")).appendChild(table);
+        const touchBox = clear($("touched"));
+        if (!S.touched.length) touchBox.textContent = "— none yet —";
+        S.touched.forEach((t) =>
+          touchBox.appendChild(row(`${t.op} ${t.file}`, "mono")),
+        );
+        const sumBox = clear($("checksums"));
+        Object.entries(S.checksums).forEach(([k, v]) => {
+          const line = row(
+            `${k.split("|")[0]} …${String(v).slice(-6)}`,
+            "mono",
+          );
+          if (S.lastChanged.includes(k.split("|")[0])) {
+            const star = document.createElement("span");
+            star.className = "changed-flash";
+            star.textContent = " ★ reloaded";
+            line.appendChild(star);
+          }
+          sumBox.appendChild(line);
+        });
+        const diskBox = clear($("disk"));
+        Object.keys(S.disk).forEach((k) => diskBox.appendChild(row(k, "mono")));
+        $("prompt").textContent = S.lastPrompt
+          ? `user: ${S.lastPrompt.userText}\n\n${S.lastPrompt.text}`
+          : "— no prompt yet —";
+        const warnBox = clear($("warnings"));
+        if (!S.warnings.length) warnBox.textContent = "— none —";
+        S.warnings.forEach((w) => warnBox.appendChild(row(`▸ ${w}`)));
+        const histBox = clear($("history"));
+        if (!S.history.length && !S.turns.length)
+          histBox.textContent = "— empty —";
+        S.history.forEach((h) => histBox.appendChild(row(h, "mono")));
+        S.turns.forEach((t) => histBox.appendChild(row(t, "mono")));
+        $("flash").textContent =
+          flashMsg ||
+          `(${S.promptCount} prompts · ${S.turns.length} turns · mode: ${MODES[S.mode]} · mid-run hook: ${S.hook ? "ON" : "OFF"})`;
+        paintWalk();
+      }
+
+      function btn(label, action, flash) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.onclick = () => {
+          S = reduce(S, action);
+          paint(flash);
+        };
+        return b;
+      }
+
+      function freePlay() {
+        const fp = $("freeplay");
+        const group = (title, ...bs) => {
+          const d = document.createElement("div");
+          const bb = document.createElement("b");
+          bb.textContent = `${title}: `;
+          d.appendChild(bb);
+          bs.forEach((b) => d.appendChild(b));
+          fp.appendChild(d);
+        };
+        group(
+          "Prompt",
+          btn(
+            "💬 ask (generic)",
+            { type: "PROMPT", text: "fix the build" },
+            "prompt rendered",
+          ),
+        );
+        group(
+          "Touch files",
+          btn("📖 read src/api/health.ts", {
+            type: "READ",
+            file: "src/api/health.ts",
+          }),
+          btn("✏️ write src/api/health.ts", {
+            type: "WRITE",
+            file: "src/api/health.ts",
+          }),
+          btn("✏️ write NEW db/migrate/0042.sql (no read!)", {
+            type: "WRITE",
+            file: "db/migrate/0042.sql",
+          }),
+          btn("📖 read db/migrate/0042.sql", {
+            type: "READ",
+            file: "db/migrate/0042.sql",
+          }),
+          btn("✏️ write src/util.ts (trips general+scoped)", {
+            type: "WRITE",
+            file: "src/util.ts",
+          }),
+        );
+        group(
+          "Rules on disk",
+          btn(
+            "🛠 edit testing.md text",
+            {
+              type: "EDIT_DISK",
+              key: "testing.md|global",
+              text: "# Testing\nRun vitest AND lint before commit.",
+            },
+            "disk changed — snapshot stale until reload",
+          ),
+          btn(
+            "➕ add perf.md (system)",
+            {
+              type: "ADD_DISK",
+              key: "perf.md|project",
+              rule: {
+                text: "# Perf\nProfile first.",
+                tier: "system",
+                paths: null,
+              },
+            },
+            "on disk, not loaded until refresh",
+          ),
+        );
+        group(
+          "Lifecycle",
+          btn(
+            "🔁 /reload (checksum verify)",
+            { type: "RELOAD" },
+            "reload verified",
+          ),
+          btn("🔄 explicit refresh", { type: "REFRESH" }, "refresh verified"),
+          btn(
+            "🗜 /compact",
+            { type: "COMPACT" },
+            "history summarized — rules untouched",
+          ),
+          btn(
+            "💥 corrupt checksum cache",
+            { type: "CORRUPT" },
+            "cache corrupt → full reload",
+          ),
+          btn(
+            "⚡ next LLM turn (same run)",
+            { type: "TURN" },
+            "inner turn reconciled",
+          ),
+          btn("🪝 mid-run hook: ON", { type: "HOOK", on: true }),
+          btn("🪝 mid-run hook: OFF", { type: "HOOK", on: false }),
+        );
+        group(
+          "Trigger mode",
+          btn("Pi: Read+Write", { type: "MODE", mode: "pi" }),
+          btn("Claude: Read-only", { type: "MODE", mode: "claude" }),
+        );
+        group("Session", btn("↺ reset demo", { type: "RESET" }, "reset"));
+      }
+
+      const WALKS = [
+        {
+          id: "happy",
+          title: "Happy path",
+          desc: "Startup scan → generic prompt (only unscoped rules) → read an API file → prompt again (scoped rule activates). Watch the green rows.",
+          steps: [
+            ["↺ reset", { type: "RESET" }],
+            ["💬 ask generic", { type: "PROMPT", text: "fix the build" }],
+            [
+              "📖 read src/api/health.ts",
+              { type: "READ", file: "src/api/health.ts" },
+            ],
+            ["💬 ask again", { type: "PROMPT", text: "review the handler" }],
+          ],
+        },
+        {
+          id: "writehole",
+          title: "The Write-hole (Q5)",
+          desc: "Write a NEW migration file without reading it, then prompt. In Pi mode the rule fires; flip to Claude mode, reset, repeat — it stays dark. This is bug #23478.",
+          steps: [
+            ["↺ reset", { type: "RESET" }],
+            [
+              "✏️ write NEW migration",
+              { type: "WRITE", file: "db/migrate/0042.sql" },
+            ],
+            [
+              "💬 ask to review it",
+              { type: "PROMPT", text: "is this migration safe?" },
+            ],
+            ["switch to Claude mode", { type: "MODE", mode: "claude" }],
+            ["↺ reset (keeps mode)", { type: "RESET" }],
+            [
+              "✏️ write NEW migration",
+              { type: "WRITE", file: "db/migrate/0042.sql" },
+            ],
+            [
+              "💬 ask again — rule missing",
+              { type: "PROMPT", text: "is this migration safe?" },
+            ],
+          ],
+        },
+        {
+          id: "reload",
+          title: "Checksum reload (Q6)",
+          desc: "Edit a rule on disk (snapshot goes stale — prompt still shows old text), then /reload: only the changed file refreshes (★). Unchanged files keep byte-identical text.",
+          steps: [
+            ["↺ reset", { type: "RESET" }],
+            [
+              "💬 prompt (old text)",
+              { type: "PROMPT", text: "how do I test?" },
+            ],
+            [
+              "🛠 edit testing.md",
+              {
+                type: "EDIT_DISK",
+                key: "testing.md|global",
+                text: "# Testing\nRun vitest AND lint before commit.",
+              },
+            ],
+            [
+              "💬 prompt (still old!)",
+              { type: "PROMPT", text: "how do I test?" },
+            ],
+            ["🔁 /reload", { type: "RELOAD" }],
+            [
+              "💬 prompt (new text ★)",
+              { type: "PROMPT", text: "how do I test?" },
+            ],
+          ],
+        },
+        {
+          id: "compact",
+          title: "Compaction survival",
+          desc: "Build history, then /compact: history collapses to one summary line, but rules + checksums are untouched and the next prompt re-renders full rule text. Assumption 6, felt.",
+          steps: [
+            ["↺ reset", { type: "RESET" }],
+            ["📖 read API file", { type: "READ", file: "src/api/health.ts" }],
+            ["💬 prompt", { type: "PROMPT", text: "review it" }],
+            ["🗜 /compact", { type: "COMPACT" }],
+            [
+              "💬 prompt after compact",
+              { type: "PROMPT", text: "and the tests?" },
+            ],
+          ],
+        },
+        {
+          id: "midrun",
+          title: "Mid-run lag (your report)",
+          desc: "A prompt opens a run. Files touched mid-run only reach the NEXT prompt — unless the provider hook reconciles them on the next inner turn. Watch the turn log.",
+          steps: [
+            ["↺ reset", { type: "RESET" }],
+            [
+              "💬 prompt (run opens)",
+              { type: "PROMPT", text: "add the migration" },
+            ],
+            [
+              "✏️ write migration mid-run",
+              { type: "WRITE", file: "db/migrate/0043.sql" },
+            ],
+            ["⚡ next turn — hook appends", { type: "TURN" }],
+            ["🪝 hook OFF", { type: "HOOK", on: false }],
+            [
+              "✏️ write API file mid-run",
+              { type: "WRITE", file: "src/api/other.ts" },
+            ],
+            ["⚡ next turn — rule MISSING", { type: "TURN" }],
+            ["💬 next prompt recovers", { type: "PROMPT", text: "continue" }],
+          ],
+        },
+      ];
+      let curWalk = 0,
+        curStep = 0;
+      function paintWalk() {
+        $("tabs").textContent = "";
+        const w = WALKS[curWalk];
+        WALKS.forEach((x, i) => {
+          const b = document.createElement("button");
+          b.textContent = x.title;
+          b.className = i === curWalk ? "on" : "";
+          b.onclick = () => {
+            curWalk = i;
+            curStep = 0;
+            S = reduce(S, { type: "RESET" });
+            paint("walkthrough reset");
+          };
+          $("tabs").appendChild(b);
+        });
+        clear($("walkdesc")).appendChild(row(w.desc));
+        $("walksteps").textContent = "";
+        w.steps.forEach((s, i) => {
+          const d = document.createElement("div");
+          d.className = "step" + (i < curStep ? " done" : "");
+          const b = document.createElement("button");
+          b.textContent =
+            (i < curStep ? "✓ " : i === curStep ? "▶ " : "") + s[0];
+          b.disabled = i !== curStep;
+          b.onclick = () => {
+            S = reduce(S, s[1]);
+            curStep++;
+            paint();
+          };
+          d.appendChild(b);
+          $("walksteps").appendChild(d);
+        });
+      }
+      freePlay();
+      paint();
+    </script>
+  </body>
+</html>

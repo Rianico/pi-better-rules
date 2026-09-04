@@ -1,0 +1,35 @@
+# Code Context — Pi extension lifecycle for rules injection
+
+## Files Retrieved
+
+1. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` (lifecycle diagram ~lines 284-330; `session_start` ~395-402; `session_shutdown` ~515-528; `before_agent_start` ~530-568; `ctx.getSystemPrompt` ~1093-1110; `ctx.reload()` ~1303-1325) — authoritative event contract.
+2. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/compaction.md` (How It Works ~"Find cut point…Rebuilds context"; `session_before_compact` ~lines for preparation/reason/willRetry; CompactionEntry structure) — what compaction summarizes vs rebuilds.
+3. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/claude-rules.ts` (full file: `session_start` scan + `before_agent_start` append of rules list) — reference pattern, rescans on every `session_start` incl. reload.
+4. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` (`SessionStartEvent.reason: "startup"|"reload"|"new"|"resume"|"fork"`; `SessionShutdownEvent.reason: "quit"|"reload"|"new"|"resume"|"fork"`; `ResourcesDiscoverEvent.reason: "startup"|"reload"`; `BeforeAgentStartEvent` + `BeforeAgentStartEventResult{message?,systemPrompt?}`; `SessionBeforeCompactEvent{preparation,reason:"manual"|"threshold"|"overflow",willRetry}`) — type-level proof.
+5. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js` (~lines 914-940 preflight `emitBeforeAgentStart` + `_systemPromptOverride` apply/reset; ~lines 738-767 `_rebuildSystemPrompt` from resource-loader/tools; `finally` in `_runAgentPrompt` clears `_systemPromptOverride`) — runtime behavior proof.
+6. `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js` (`sessionEntryToContextMessages` ~166-195; `buildContextEntries` ~198-233) — compaction rebuilds message list only, never system prompt.
+
+## Key Code
+
+- Lifecycle (extensions.md diagram): `pi starts → project_trust → session_start{startup} → resources_discover{startup}`; per prompt: `input → before_agent_start → agent_start → turn* → agent_end → agent_settled`; `/new|/resume`: `session_before_switch → session_shutdown → session_start{new|resume} → resources_discover{startup}`; `/fork|/clone`: `session_before_fork → session_shutdown → session_start{fork}`; `/reload`: `session_shutdown{reload} → session_start{reload} + resources_discover{reload}` (ctx.reload() section); `/compact|auto`: `session_before_compact → session_compact | session_compact_failed`; exit: `session_shutdown{quit}`.
+- `BeforeAgentStartEvent{prompt, images?, systemPrompt, systemPromptOptions}` → returns `{message?, systemPrompt?}`; chained across handlers; `ctx.getSystemPrompt()` reflects chain so far; does NOT include later `context` mutations or `before_provider_request` payload rewrites (extensions.md ~565, ~709, ~1093-1124).
+- agent-session.js preflight (per user prompt, before `_runAgentPrompt`): `emitBeforeAgentStart(expandedText, images, baseSystemPrompt, baseOptions)`; if `result.systemPrompt !== undefined` set override else reset to `_baseSystemPrompt`; `finally { _systemPromptOverride = undefined; …_emitAgentSettled() }`. Base rebuilt only in `_rebuildSystemPrompt` (tools/resource-loader/skills/context-files), refreshed on reload path (~line 1936).
+- Compaction: summarizes entries→`CompactionEntry{summary, firstKeptEntryId, tokensBefore, usage?, details?}`; next-request context = `[compactionSummaryMsg, ...entries from firstKeptEntryId]` + separately-held `agent.state.systemPrompt`. `sessionEntryToContextMessages` maps only message/custom_message/branch_summary/compaction entries — no system-prompt entry exists.
+
+## Architecture
+
+- System prompt is held outside the session entry log (`agent.state.systemPrompt` = base or per-prompt override). Session/compaction operate on the entry/message list. So compaction never summarizes or persists injected prompt text; injection must be re-applied each prompt.
+- `before_agent_start` is the per-user-prompt injection point (once per agent run preflight, NOT per inner LLM turn/loop or per `context` event which fires before each LLM call). `context` sees a deep-copy of messages; `before_provider_request` sees final payload — neither feeds back into stored system prompt.
+- Extension in-memory state (e.g. scanned `ruleFiles`) lives in the loaded module instance; `/reload`, `/new`, `/resume`, `/fork` all tear down the runtime (`session_shutdown`) and re-run the factory + `session_start` with the corresponding reason. `/compact` does NOT reload extensions and fires no `session_start`/`session_shutdown`.
+
+## Start Here
+
+Another agent should open `docs/extensions.md` Lifecycle Overview + `before_agent_start` section first, then `dist/core/agent-session.js` preflight block (~914-940) to confirm per-prompt override semantics.
+
+## Answers
+
+1. **Events:** startup → `session_start{startup}` + `resources_discover{startup}`; `/reload` → `session_shutdown{reload}`, `session_start{reload}`, `resources_discover{reload}`; fork → `session_before_fork`, `session_shutdown{fork}`, `session_start{fork, previousSessionFile}`; resume/new → `session_before_switch`, `session_shutdown`, `session_start{new|resume}`; compaction → `session_before_compact{reason: manual|threshold|overflow, willRetry}`, then `session_compact` or `session_compact_failed` only — no start/shutdown/reload events.
+2. **`before_agent_start` cadence:** runs once per user prompt (agent-run preflight), NOT every inner turn. Implication: no caching benefit or staleness across turns within one run — but it DOES re-run on every subsequent user prompt, so expensive work (fs scan, prompt assembly) repeats; cache the scan in module state keyed at `session_start`, and keep the handler to cheap string concat. Override is ephemeral (reset after each run), so every prompt must return `systemPrompt` again.
+3. **Compaction vs system prompt:** leaves it alone (REFUTED that it rebuilds/summarizes it). Evidence: compaction diagram "What the LLM sees: system + summary + kept messages"; `buildContextEntries`/`sessionEntryToContextMessages` handle only entries; base system prompt rebuilt from tools/resources, override re-applied per prompt.
+4. **Skip rescan on reload:** check `event.reason` in `session_start`: `if (event.reason === "reload") return;` (keep existing `ruleFiles`), or more precisely skip only when cwd unchanged; rescan on `startup|new|resume|fork`. Note `resources_discover{reload}` also fires — same discriminator available there.
+5. **Survives vs re-inject:** survives compaction: session entries, `CompactionEntry` summary chain, file-op `details`, extension-persisted state (`appendEntry`), module in-memory state (compaction doesn't reload). Must re-inject every prompt: `systemPrompt` override and `message` injection from `before_agent_start` (both are per-run, not stored as base). Base prompt inputs (tools/skills/context files) survive and are rebuilt only on reload/resource change.
