@@ -27,7 +27,7 @@ import {
 	buildScopedToolBlock,
 	buildSystemPromptOverride,
 	extractResultPaths,
-	findActivatingFile,
+	findActivation,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
@@ -313,20 +313,24 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 		);
 		if (fresh.length === 0) return undefined;
 		const activatedBy = new Map<string, string>();
+		const patterns = new Set<string>();
 		for (const rule of fresh) {
-			const cause = findActivatingFile(rule, touched, matches);
-			if (cause !== undefined) activatedBy.set(rule.rel, cause);
+			const activation = findActivation(rule, touched, matches);
+			if (activation === undefined) continue;
+			activatedBy.set(rule.rel, activation.file);
+			patterns.add(activation.pattern);
 		}
 		const target = files[0] ?? "touched files";
+		const patternNote =
+			patterns.size === 1
+				? `matched pattern: ${[...patterns][0] ?? ""}`
+				: `matched patterns: ${[...patterns].join(", ")}`;
 		const block = buildScopedToolBlock(fresh, target, activatedBy);
 		if (block === undefined) return undefined;
 		for (const rule of fresh) state.injected.add(rule.rel);
 		ctx.ui.notify(
-			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target}\n${fresh
-				.map((rule) => {
-					const cause = activatedBy.get(rule.rel) ?? target;
-					return `- ${rule.rel} (matched path: ${cause})`;
-				})
+			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target}, ${patternNote}\n${fresh
+				.map((rule) => `- ${rule.rel}`)
 				.join("\n")}`,
 			"warning",
 		);

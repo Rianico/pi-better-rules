@@ -320,8 +320,10 @@ describe("extension entry", () => {
 			n.message.includes("+1 scoped rule(s)"),
 		);
 		expect(warn?.type).toBe("warning");
-		expect(warn?.message).toContain("matched for src/new.ts");
-		expect(warn?.message).toContain("- frontend.md (matched path: src/new.ts)");
+		expect(warn?.message).toContain(
+			"matched for src/new.ts, matched pattern: src/**",
+		);
+		expect(warn?.message).toContain("\n- frontend.md");
 
 		// Inject-once: a second matching result appends nothing.
 		const again = (await toolResult(

@@ -39,7 +39,41 @@ export function matchFile(
 	file: string,
 	matches: PathMatcher,
 ): boolean {
-	return candidateBases(file).some((base) => matches(patterns, base));
+	return findMatchingPattern(patterns, file, matches) !== undefined;
+}
+
+/** First `paths:` pattern hitting any candidate base of `file`, if any. */
+export function findMatchingPattern(
+	patterns: readonly string[],
+	file: string,
+	matches: PathMatcher,
+): string | undefined {
+	for (const pattern of patterns) {
+		if (candidateBases(file).some((base) => matches([pattern], base))) {
+			return pattern;
+		}
+	}
+	return undefined;
+}
+
+/** What activated a rule: the touched file plus the `paths:` pattern that fired. */
+export interface Activation {
+	readonly file: string;
+	readonly pattern: string;
+}
+
+/** First (file, pattern) activation for a scoped rule, if any. */
+export function findActivation(
+	rule: LifecycleRule,
+	touched: ReadonlySet<string>,
+	matches: PathMatcher,
+): Activation | undefined {
+	if (rule.paths === undefined) return undefined;
+	for (const file of touched) {
+		const pattern = findMatchingPattern(rule.paths, file, matches);
+		if (pattern !== undefined) return { file, pattern };
+	}
+	return undefined;
 }
 
 /** Repo-relative file paths touched by a tool result (read/edit `path`,
@@ -140,11 +174,7 @@ export function findActivatingFile(
 	touched: ReadonlySet<string>,
 	matches: PathMatcher,
 ): string | undefined {
-	if (rule.paths === undefined) return undefined;
-	for (const file of touched) {
-		if (matchFile(rule.paths, file, matches)) return file;
-	}
-	return undefined;
+	return findActivation(rule, touched, matches)?.file;
 }
 
 /** One scoped section with its activating file (why-it-loaded). */

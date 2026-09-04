@@ -7,6 +7,8 @@ import {
 	candidateBases,
 	extractResultPaths,
 	findActivatingFile,
+	findActivation,
+	findMatchingPattern,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
@@ -130,6 +132,52 @@ describe("matchFile", () => {
 		const matches: PathMatcher = (patterns, file) =>
 			patterns.some((p) => p === "src/**" && file.startsWith("src/"));
 		expect(matchFile(["src/**"], "src/a.ts", matches)).toBe(true);
+	});
+});
+
+describe("findMatchingPattern", () => {
+	it("returns the firing pattern, preferring earlier entries", () => {
+		const matches: PathMatcher = (patterns, file) =>
+			patterns.some((p) => p === "src/**" || p === "**/*.ts") &&
+			file.startsWith("src/");
+		expect(
+			findMatchingPattern(["src/**", "**/*.ts"], "src/a.ts", matches),
+		).toBe("src/**");
+	});
+
+	it("finds bare patterns via the basename base", () => {
+		expect(
+			findMatchingPattern(
+				["other.toml", "pyproject.toml"],
+				"a/b/pyproject.toml",
+				exactMatch,
+			),
+		).toBe("pyproject.toml");
+	});
+
+	it("returns undefined when nothing matches", () => {
+		expect(
+			findMatchingPattern(["src/**"], "docs/a.md", exactMatch),
+		).toBeUndefined();
+	});
+});
+
+describe("findActivation", () => {
+	it("returns the file plus the firing pattern", () => {
+		expect(
+			findActivation(scopedRule, new Set(["src/app.tsx"]), (_p, f) =>
+				f.endsWith(".tsx"),
+			),
+		).toEqual({
+			file: "src/app.tsx",
+			pattern: "src/**/*.tsx",
+		});
+	});
+
+	it("returns undefined when nothing matches", () => {
+		expect(
+			findActivation(scopedRule, new Set(["README.md"]), exactMatch),
+		).toBeUndefined();
 	});
 });
 describe("getUnscopedRules", () => {
