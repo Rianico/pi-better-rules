@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- **rules:** bullet-point match warning with per-rule matched path
 - **rules:** inject scoped rules same-turn via tool_result
 - **rules:** render rules under rel separators with bodies intact
 - run release workflow on pnpm and node 26

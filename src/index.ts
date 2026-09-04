@@ -322,8 +322,13 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 		if (block === undefined) return undefined;
 		for (const rule of fresh) state.injected.add(rule.rel);
 		ctx.ui.notify(
-			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target} (${fresh.map((rule) => rule.rel).join(", ")})`,
-			"info",
+			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target}\n${fresh
+				.map((rule) => {
+					const cause = activatedBy.get(rule.rel) ?? target;
+					return `- ${rule.rel} (matched path: ${cause})`;
+				})
+				.join("\n")}`,
+			"warning",
 		);
 		return { content: [...event.content, { type: "text", text: block }] };
 	});

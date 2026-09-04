@@ -289,8 +289,8 @@ describe("extension entry", () => {
 			createCtx(project, []),
 		);
 		const toolResult = getHandler(stub, "tool_result");
-		const ctx = createCtx(project, []);
-
+		const notifications: Notification[] = [];
+		const ctx = createCtx(project, notifications);
 		const bash = (await toolResult(
 			{
 				type: "tool_result",
@@ -316,6 +316,12 @@ describe("extension entry", () => {
 		expect(write?.content).toHaveLength(2);
 		expect(write?.content?.[1]?.text).toContain("frontend.md");
 		expect(write?.content?.[1]?.text).toContain("matched for src/new.ts");
+		const warn = notifications.find((n) =>
+			n.message.includes("+1 scoped rule(s)"),
+		);
+		expect(warn?.type).toBe("warning");
+		expect(warn?.message).toContain("matched for src/new.ts");
+		expect(warn?.message).toContain("- frontend.md (matched path: src/new.ts)");
 
 		// Inject-once: a second matching result appends nothing.
 		const again = (await toolResult(
