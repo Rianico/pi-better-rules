@@ -8,7 +8,6 @@ copy = "wt step copy-ignored"
 gate = "pnpm run lint && pnpm run typecheck && pnpm test && pnpm exec commitlint --from=origin/main --to=HEAD --verbose"
 
 [list]
-json-schema = 1
 url = "http://localhost:{{ branch | hash_port }}"
 
 [pre-remove]
