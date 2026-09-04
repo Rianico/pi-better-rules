@@ -1,7 +1,7 @@
 # Checksum cache + refresh
 
 Type: feat
-Status: open
+Status: resolved
 Blocked by: 07
 
 ## Question

@@ -1,7 +1,7 @@
 # Build-ready spec
 
 Type: spec
-Status: open
+Status: resolved
 Blocked by: 06
 
 ## Question
