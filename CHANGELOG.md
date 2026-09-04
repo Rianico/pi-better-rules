@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- **rules:** scope-only model with load visibility (#2)
+- **rules:** scope-only model with load visibility (#2) (#3)
 - **packaging:** declare pi extension manifest entry
 - wire extension entry
 - implement rule scanner
@@ -15,12 +15,12 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- **ci:** provision pnpm via action-setup in release workflow
 - run release workflow on pnpm and node 26
 - point release assets at pnpm-lock
 
 ### Documentation
 
-- **changelog:** sync Unreleased with squash-merge PR reference
 - changelog header spacing
 - resolve entry, packaging, and guide tickets
 - add README rule-memory section and rule-authoring guide
