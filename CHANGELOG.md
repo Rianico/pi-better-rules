@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **rules:** scope-only model with load visibility
 - **packaging:** declare pi extension manifest entry
 - wire extension entry
 - implement rule scanner

@@ -83,12 +83,17 @@ async function makeTree(files: Record<string, string>): Promise<string> {
 	return dir;
 }
 
-const GLOBAL_SYS = `---\nmetadata:\n  rule_tier: system\n---\n# Global invariants\n\nNever leak secrets.\n`;
-const PROJECT_SCOPED = `---\nmetadata:\n  rule_tier: general\npaths:\n  - "src/**"\n---\n# Frontend rules\n\nUse hooks.\n`;
+const GLOBAL_UNSCOPED = `# Global invariants\n\nNever leak secrets.\n`;
+const PROJECT_SCOPED = `---\npaths:\n  - "src/**"\n---\n# Frontend rules\n\nUse hooks.\n`;
+
+interface AgentStartResult {
+	systemPrompt?: string;
+	message?: { customType: string; content: string; display: boolean };
+}
 
 async function setupBothTrees(): Promise<{ home: string; project: string }> {
 	const home = await makeTree({
-		".pi/agent/rules/global-sys.md": GLOBAL_SYS,
+		".pi/agent/rules/global-unscoped.md": GLOBAL_UNSCOPED,
 		".pi/agent/rules/shared.md": "# Shared\n\nShared content.\n",
 	});
 	const project = await makeTree({
@@ -100,13 +105,13 @@ async function setupBothTrees(): Promise<{ home: string; project: string }> {
 }
 
 describe("extension entry", () => {
-	it("registers exactly the four §6 handlers and no compact handlers", () => {
+	it("registers exactly the four §6 handlers", () => {
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
 		expect([...stub.events].sort()).toEqual(
 			[
 				"before_agent_start",
-				"before_provider_request",
+				"session_compact",
 				"session_start",
 				"tool_call",
 			].sort(),
@@ -125,9 +130,11 @@ describe("extension entry", () => {
 		);
 
 		const info = notifications.filter((n) => n.type === "info");
-		expect(info.some((n) => /pi-rules: 3 rule\(s\)/.test(n.message))).toBe(
-			true,
-		);
+		expect(
+			info.some((n) =>
+				/pi-rules: 3 rule\(s\) — 2 unscoped, 1 scoped/.test(n.message),
+			),
+		).toBe(true);
 		const warnings = notifications.filter((n) => n.type === "warning");
 		expect(warnings.some((n) => /shared\.md.*shadow/i.test(n.message))).toBe(
 			true,
@@ -167,7 +174,7 @@ describe("extension entry", () => {
 		const result = (await beforeAgentStart(
 			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			createCtx(project, []),
-		)) as { systemPrompt?: string } | undefined;
+		)) as AgentStartResult | undefined;
 		expect(result?.systemPrompt).toContain("Never leak secrets.");
 	});
 
@@ -206,8 +213,10 @@ describe("extension entry", () => {
 		const result = (await beforeAgentStart(
 			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			promptCtx,
-		)) as { systemPrompt?: string } | undefined;
-		expect(result?.systemPrompt).toContain("Frontend rules v2");
+		)) as AgentStartResult | undefined;
+		expect(result?.message?.content).toContain("Frontend rules v2");
+		expect(result?.message?.display).toBe(true);
+		expect(result?.message?.customType).toBe("pi-rules");
 	});
 
 	it("rebuilds a corrupt checksum cache with a warning on reload", async () => {
@@ -237,7 +246,7 @@ describe("extension entry", () => {
 		).toBe(true);
 	});
 
-	it("tool_call tracks read/edit/write paths and ignores bash", async () => {
+	it("tool_call tracks read/edit/write paths and injects scoped messages inject-once", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -256,8 +265,10 @@ describe("extension entry", () => {
 		const idle = (await beforeAgentStart(
 			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			ctx,
-		)) as { systemPrompt?: string } | undefined;
-		expect(idle?.systemPrompt).not.toContain("frontend.md");
+		)) as AgentStartResult | undefined;
+		// Unscoped full content is always appended; no scoped message yet.
+		expect(idle?.systemPrompt).toContain("Never leak secrets.");
+		expect(idle?.message).toBeUndefined();
 
 		await toolCall(
 			{ type: "tool_call", toolName: "write", input: { path: "src/new.ts" } },
@@ -266,15 +277,22 @@ describe("extension entry", () => {
 		const active = (await beforeAgentStart(
 			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			ctx,
-		)) as { systemPrompt?: string } | undefined;
-		expect(active?.systemPrompt).toContain("frontend.md");
+		)) as AgentStartResult | undefined;
+		expect(active?.message?.content).toContain("frontend.md");
+		expect(active?.message?.display).toBe(true);
+
+		// Inject-once: second prompt carries no duplicate message.
+		const again = (await beforeAgentStart(
+			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
+			ctx,
+		)) as AgentStartResult | undefined;
+		expect(again?.systemPrompt).toContain("Never leak secrets.");
+		expect(again?.message).toBeUndefined();
 	});
 
-	it("before_agent_start returns nothing when no rules are active", async () => {
+	it("before_agent_start returns nothing when no rules exist", async () => {
 		const home = await makeTree({});
-		const project = await makeTree({
-			".pi/rules/scoped-only.md": PROJECT_SCOPED,
-		});
+		const project = await makeTree({});
 		vi.stubEnv("HOME", home);
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -290,35 +308,86 @@ describe("extension entry", () => {
 		expect(result).toBeUndefined();
 	});
 
-	it("before_provider_request passes through without a string system field", async () => {
-		const { project } = await setupBothTrees();
+	it("before_agent_start returns only a message when scoped rules activate without unscoped", async () => {
+		const home = await makeTree({});
+		const project = await makeTree({
+			".pi/rules/scoped-only.md": PROJECT_SCOPED,
+		});
+		vi.stubEnv("HOME", home);
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
 		await getHandler(stub, "session_start")(
 			{ type: "session_start", reason: "startup" },
 			createCtx(project, []),
 		);
-		const reconcile = getHandler(stub, "before_provider_request");
+
+		// No touches yet: nothing to inject.
+		const idle = (await getHandler(stub, "before_agent_start")(
+			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
+			createCtx(project, []),
+		)) as AgentStartResult | undefined;
+		expect(idle).toBeUndefined();
+
 		const ctx = createCtx(project, []);
-
-		const absent = { prompt: "hi" };
-		expect(
-			await reconcile(
-				{ type: "before_provider_request", payload: absent },
-				ctx,
-			),
-		).toBeUndefined();
-
-		const nonString = { system: 42 };
-		expect(
-			await reconcile(
-				{ type: "before_provider_request", payload: nonString },
-				ctx,
-			),
-		).toBeUndefined();
+		await getHandler(stub, "tool_call")(
+			{ type: "tool_call", toolName: "read", input: { path: "src/app.ts" } },
+			ctx,
+		);
+		const active = (await getHandler(stub, "before_agent_start")(
+			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
+			ctx,
+		)) as AgentStartResult | undefined;
+		expect(active?.systemPrompt).toBeUndefined();
+		expect(active?.message?.content).toContain("Use hooks.");
+	});
+	it("startup notice lists what loaded and why", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		const notifications: Notification[] = [];
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, notifications),
+		);
+		const info = notifications.filter((n) => n.type === "info");
+		expect(info).toHaveLength(1);
+		expect(info[0]?.message).toContain("(full scan on startup)");
+		expect(info[0]?.message).toContain(
+			"- global-unscoped.md [global] — unscoped (always-on)",
+		);
+		expect(info[0]?.message).toContain(
+			"- frontend.md [project] — scoped (src/**)",
+		);
 	});
 
-	it("before_provider_request reconciles the marker block idempotently", async () => {
+	it("reload-changed notice names refreshed files and why", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		const start = getHandler(stub, "session_start");
+		await start(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		await writeFile(
+			join(project, ".pi", "rules", "frontend.md"),
+			PROJECT_SCOPED.replace("# Frontend rules", "# Frontend rules v2"),
+		);
+		const notifications: Notification[] = [];
+		await start(
+			{ type: "session_start", reason: "reload" },
+			createCtx(project, notifications),
+		);
+		const info = notifications.filter((n) => n.type === "info");
+		expect(info.some((n) => /checksum changes detected/.test(n.message))).toBe(
+			true,
+		);
+		expect(
+			info.some((n) => n.message.includes("~ frontend.md [project]")),
+		).toBe(true);
+	});
+
+	it("session_compact notifies retention with the rule list", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -326,21 +395,37 @@ describe("extension entry", () => {
 			{ type: "session_start", reason: "startup" },
 			createCtx(project, []),
 		);
-		const reconcile = getHandler(stub, "before_provider_request");
+		const notifications: Notification[] = [];
+		await getHandler(stub, "session_compact")(
+			{ type: "session_compact", reason: "threshold" },
+			createCtx(project, notifications),
+		);
+		expect(notifications).toHaveLength(1);
+		expect(notifications[0]?.message).toContain(
+			"retained across compaction (threshold)",
+		);
+		expect(notifications[0]?.message).toContain(
+			"- global-unscoped.md [global]",
+		);
+	});
+
+	it("scoped messages state the activating file", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
 		const ctx = createCtx(project, []);
-
-		const once = (await reconcile(
-			{ type: "before_provider_request", payload: { system: "hello" } },
+		await getHandler(stub, "tool_call")(
+			{ type: "tool_call", toolName: "read", input: { path: "src/app.ts" } },
 			ctx,
-		)) as { system: string };
-		expect(once.system).toContain("hello");
-		expect(once.system).toContain("<!-- pi-rules:begin -->");
-		expect(once.system).toContain("Never leak secrets.");
-
-		const twice = (await reconcile(
-			{ type: "before_provider_request", payload: once },
+		);
+		const result = (await getHandler(stub, "before_agent_start")(
+			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			ctx,
-		)) as { system: string };
-		expect(twice.system).toBe(once.system);
+		)) as AgentStartResult | undefined;
+		expect(result?.message?.content).toContain("Activated by `src/app.ts`");
 	});
 });

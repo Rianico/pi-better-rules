@@ -1,22 +1,19 @@
 // pi-better-rules lifecycle: activation tracking + prompt rendering.
-// Spec §§3.1–3.2, 6. Glob matching lives in scanner.ts; this module takes an
-// injected PathMatcher so scoped activation stays testable in isolation.
+// Scope-only model (issue 14): no tier. Unscoped rules (paths absent) are
+// always-on full content appended to the system prompt (like pi's appended
+// system prompt). Scoped rules (paths present) are full content injected as
+// visible session messages (display: true), cumulative inject-once.
+// Glob matching lives in scanner.ts; this module takes an injected
+// PathMatcher so scoped activation stays testable in isolation.
 
-export type RuleTier = "system" | "general";
 export type RuleScope = "global" | "project";
 
 export interface LifecycleRule {
 	readonly rel: string;
 	readonly scope: RuleScope;
-	readonly tier: RuleTier;
 	readonly paths?: readonly string[];
 	readonly summary: string;
 	readonly text: string;
-}
-
-export interface ActiveRuleSet {
-	readonly sys: readonly LifecycleRule[];
-	readonly gen: readonly LifecycleRule[];
 }
 
 export type PathMatcher = (
@@ -24,11 +21,14 @@ export type PathMatcher = (
 	file: string,
 ) => boolean;
 
-export const RULES_BEGIN = "<!-- pi-rules:begin -->";
-export const RULES_END = "<!-- pi-rules:end -->";
+/** Custom message type for injected scoped rules. */
+export const RULES_MESSAGE_TYPE = "pi-rules";
 
-const STRIP_PATTERN =
-	/<!-- pi-rules:begin -->[\s\S]*?<!-- pi-rules:end -->\n?/g;
+export interface ScopedMessage {
+	readonly customType: typeof RULES_MESSAGE_TYPE;
+	readonly content: string;
+	readonly display: true;
+}
 
 const ACTIVATION_TOOLS: readonly string[] = ["read", "edit", "write"];
 
@@ -46,90 +46,95 @@ export function trackToolCall(
 	return true;
 }
 
-/** Split rules into active system/general sets; unscoped rules are always on. */
-export function getActiveRules(
+/** Unscoped rules (no `paths:`) — always on. */
+export function getUnscopedRules(
+	rules: readonly LifecycleRule[],
+): readonly LifecycleRule[] {
+	return rules.filter((rule) => rule.paths === undefined);
+}
+
+/** Scoped rules whose `paths:` match any cumulatively touched file. */
+export function getActiveScopedRules(
 	rules: readonly LifecycleRule[],
 	touched: ReadonlySet<string>,
 	matches: PathMatcher,
-): ActiveRuleSet {
-	const sys: LifecycleRule[] = [];
-	const gen: LifecycleRule[] = [];
-	for (const rule of rules) {
-		const active =
-			rule.paths === undefined ||
-			[...touched].some((file) => matches(rule.paths ?? [], file));
-		if (!active) continue;
-		if (rule.tier === "system") sys.push(rule);
-		else gen.push(rule);
-	}
-	return { sys, gen };
+): readonly LifecycleRule[] {
+	return rules.filter(
+		(rule) =>
+			rule.paths !== undefined &&
+			[...touched].some((file) => matches(rule.paths ?? [], file)),
+	);
 }
 
-function renderSections(active: ActiveRuleSet): string | undefined {
-	const parts: string[] = [];
-	if (active.sys.length > 0) {
-		const body = active.sys
-			.map((rule) => `### ${rule.rel} [${rule.scope}]\n${rule.text}`)
-			.join("\n\n");
-		parts.push(`## Rules: system tier (full)\n${body}`);
-	}
-	if (active.gen.length > 0) {
-		const body = active.gen
-			.map((rule) => `- ${rule.rel} [${rule.scope}] — ${rule.summary}`)
-			.join("\n");
-		parts.push(
-			`## Rules: general tier (index — use the read tool for full text)\n${body}`,
-		);
-	}
-	if (parts.length === 0) return undefined;
-	return parts.join("\n\n");
+/** Scoped-active rules not yet injected (cumulative inject-once). */
+export function getNewScopedRules(
+	activeScoped: readonly LifecycleRule[],
+	injected: ReadonlySet<string>,
+): readonly LifecycleRule[] {
+	return activeScoped.filter((rule) => !injected.has(rule.rel));
 }
 
-/** Per-prompt systemPrompt override for before_agent_start; undefined when idle. */
+function renderUnscoped(
+	unscoped: readonly LifecycleRule[],
+): string | undefined {
+	if (unscoped.length === 0) return undefined;
+	const body = unscoped
+		.map((rule) => `### ${rule.rel} [${rule.scope}]\n${rule.text}`)
+		.join("\n\n");
+	return `## Rules (always-on)\n${body}`;
+}
+
+/**
+ * Per-prompt systemPrompt override carrying unscoped full content (like pi's
+ * appended system prompt); undefined when no unscoped rules exist.
+ */
 export function buildSystemPromptOverride(
 	base: string,
-	active: ActiveRuleSet,
+	unscoped: readonly LifecycleRule[],
 ): string | undefined {
-	const sections = renderSections(active);
-	if (sections === undefined) return undefined;
-	if (base === "") return sections;
-	return `${base}\n\n${sections}`;
+	const section = renderUnscoped(unscoped);
+	if (section === undefined) return undefined;
+	if (base === "") return section;
+	return `${base}\n\n${section}`;
 }
 
-/** Marker block for before_provider_request; undefined when no rules active. */
-export function buildRulesBlock(active: ActiveRuleSet): string | undefined {
-	const sections = renderSections(active);
-	if (sections === undefined) return undefined;
-	return `${RULES_BEGIN}\n${sections}\n${RULES_END}`;
+/** First touched file activating a scoped rule, if any (why-it-loaded). */
+export function findActivatingFile(
+	rule: LifecycleRule,
+	touched: ReadonlySet<string>,
+	matches: PathMatcher,
+): string | undefined {
+	if (rule.paths === undefined) return undefined;
+	for (const file of touched) {
+		if (matches(rule.paths, file)) return file;
+	}
+	return undefined;
 }
 
-/** Strip any existing marker block and rebuild; idempotent under retries. */
-export function reconcileProviderSystemText(
-	systemText: string,
-	active: ActiveRuleSet,
-): string {
-	const stripped = systemText.replace(STRIP_PATTERN, "").trimEnd();
-	const block = buildRulesBlock(active);
-	if (block === undefined) return stripped;
-	if (stripped === "") return block;
-	return `${stripped}\n${block}`;
+/** Full-content body for a scoped message (one message per activation batch). */
+export function buildScopedMessageContent(
+	rules: readonly LifecycleRule[],
+	activatedBy?: ReadonlyMap<string, string>,
+): string | undefined {
+	if (rules.length === 0) return undefined;
+	const body = rules
+		.map((rule) => {
+			const section = `### ${rule.rel} [${rule.scope}]\n${rule.text}`;
+			const cause = activatedBy?.get(rule.rel);
+			return cause === undefined
+				? section
+				: `${section}\n_Activated by \`${cause}\`._`;
+		})
+		.join("\n\n");
+	return `## Rules (scoped — activated by touched files)\n${body}`;
 }
 
-export interface ProviderPayload {
-	readonly system?: unknown;
-	readonly [key: string]: unknown;
-}
-/**
- * Reconcile the payload's string system field; pass through untouched when
- * no string system field exists (provider-specific location gap, spec §3.2).
- */
-export function reconcileProviderPayload<T extends ProviderPayload>(
-	payload: T,
-	active: ActiveRuleSet,
-): T {
-	if (typeof payload.system !== "string") return payload;
-	return {
-		...payload,
-		system: reconcileProviderSystemText(payload.system, active),
-	};
+/** Visible session message for newly activated scoped rules. */
+export function buildScopedMessage(
+	rules: readonly LifecycleRule[],
+	activatedBy?: ReadonlyMap<string, string>,
+): ScopedMessage | undefined {
+	const content = buildScopedMessageContent(rules, activatedBy);
+	if (content === undefined) return undefined;
+	return { customType: RULES_MESSAGE_TYPE, content, display: true };
 }
