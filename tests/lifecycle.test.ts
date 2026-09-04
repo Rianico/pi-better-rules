@@ -158,19 +158,19 @@ describe("buildSystemPromptOverride", () => {
 
 	it("renders unscoped full content like an appended system prompt", () => {
 		expect(buildSystemPromptOverride("base prompt", [unscopedA])).toBe(
-			"base prompt\n\n## Rules (always-on)\n### a.md [project]\nNever leak secrets.",
+			"base prompt\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
 		);
 	});
 
 	it("renders multiple unscoped rules", () => {
 		expect(buildSystemPromptOverride("base", [unscopedA, unscopedB])).toBe(
-			"base\n\n## Rules (always-on)\n### a.md [project]\nNever leak secrets.\n\n### b.md [global]\nGeneral stuff full text.",
+			"base\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.\n\n--- b.md [global] ---\nGeneral stuff full text.",
 		);
 	});
 
 	it("returns the section alone when base is empty", () => {
 		expect(buildSystemPromptOverride("", [unscopedA])).toBe(
-			"## Rules (always-on)\n### a.md [project]\nNever leak secrets.",
+			"## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
 		);
 	});
 });
@@ -186,7 +186,7 @@ describe("buildScopedMessage", () => {
 		expect(message?.customType).toBe(RULES_MESSAGE_TYPE);
 		expect(message?.customType).toBe("pi-rules");
 		expect(message?.display).toBe(true);
-		expect(message?.content).toContain("### frontend/react.md [project]");
+		expect(message?.content).toContain("--- frontend/react.md [project] ---");
 		expect(message?.content).toContain("Use hooks.");
 	});
 	it("appends the activating file when reasons are given", () => {
@@ -208,5 +208,19 @@ describe("buildScopedMessage", () => {
 		expect(
 			findActivatingFile(scopedRule, new Set(["README.md"]), exactMatch),
 		).toBeUndefined();
+	});
+	it("splits rules with rel separators and preserves original bodies", () => {
+		const titled: LifecycleRule = {
+			rel: "t.md",
+			scope: "global",
+			summary: "T",
+			text: "# T\n\nBody text.",
+		};
+		expect(buildSystemPromptOverride("base", [titled])).toBe(
+			"base\n\n## Rules (always-on)\n--- t.md [global] ---\n# T\n\nBody text.",
+		);
+		expect(buildScopedMessageContent([titled])).toBe(
+			"## Rules (scoped — activated by touched files)\n--- t.md [global] ---\n# T\n\nBody text.",
+		);
 	});
 });

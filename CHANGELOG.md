@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+- **rules:** render rules under rel separators with bodies intact
 - run release workflow on pnpm and node 26
 - point release assets at pnpm-lock
 

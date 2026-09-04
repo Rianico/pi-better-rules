@@ -41,8 +41,8 @@ Trace key: each MUST ends with its source ticket in brackets, e.g. `[03]`. `GAP:
 
 - MUST append unscoped full content to the per-prompt `systemPrompt` override — never a user-role message; scoped rules are injected as session messages instead [05, 14].
 - MUST re-apply the override on every `before_agent_start` (it runs once per user prompt and its result is ephemeral — cache the fs scan in module state at `session_start`, keep the handler to cheap string concat) [01].
-- MUST format the per-prompt render as `## Rules (always-on)` with `### <rel> [<scope>]` + full body; return nothing when no unscoped rules exist [06, 14].
-- MUST inject newly activated scoped rules as one visible message (`customType: "pi-rules"`, `display: true`) with `## Rules (scoped — activated by touched files)` + full bodies, each annotated with its activating file; track injected rels in module state and never re-inject (cumulative inject-once) [14].
+- MUST format the per-prompt render as `## Rules (always-on)` followed by one `--- rel [scope] ---` separator plus the original body per rule; return nothing when no unscoped rules exist [06, 14].
+- MUST inject newly activated scoped rules as one visible message (`customType: "pi-rules"`, `display: true`) with `## Rules (scoped — activated by touched files)`, one `--- rel [scope] ---` separator plus the original body per rule, each annotated with its activating file; track injected rels in module state and never re-inject (cumulative inject-once) [14].
 - MUST notify retention on `session_compact` (notification-only, no state work): the in-memory cache survives compaction untouched [15].
 - MUST rely on the proven fact that compaction never touches the system prompt (held separately as `agent.state.systemPrompt`) while re-injecting per prompt from cache [01].
 

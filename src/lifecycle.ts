@@ -74,13 +74,16 @@ export function getNewScopedRules(
 	return activeScoped.filter((rule) => !injected.has(rule.rel));
 }
 
+/** Render one rule with its original body intact, split by a rel separator. */
+function formatRuleSection(rule: LifecycleRule): string {
+	return `--- ${rule.rel} [${rule.scope}] ---\n${rule.text}`;
+}
+
 function renderUnscoped(
 	unscoped: readonly LifecycleRule[],
 ): string | undefined {
 	if (unscoped.length === 0) return undefined;
-	const body = unscoped
-		.map((rule) => `### ${rule.rel} [${rule.scope}]\n${rule.text}`)
-		.join("\n\n");
+	const body = unscoped.map((rule) => formatRuleSection(rule)).join("\n\n");
 	return `## Rules (always-on)\n${body}`;
 }
 
@@ -119,7 +122,7 @@ export function buildScopedMessageContent(
 	if (rules.length === 0) return undefined;
 	const body = rules
 		.map((rule) => {
-			const section = `### ${rule.rel} [${rule.scope}]\n${rule.text}`;
+			const section = formatRuleSection(rule);
 			const cause = activatedBy?.get(rule.rel);
 			return cause === undefined
 				? section

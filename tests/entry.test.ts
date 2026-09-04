@@ -190,7 +190,7 @@ describe("extension entry", () => {
 
 		await writeFile(
 			join(project, ".pi", "rules", "frontend.md"),
-			PROJECT_SCOPED.replace("# Frontend rules", "# Frontend rules v2"),
+			PROJECT_SCOPED.replace("Use hooks.", "Use hooks v2"),
 		);
 		const notifications: Notification[] = [];
 		await start(
@@ -214,7 +214,7 @@ describe("extension entry", () => {
 			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
 			promptCtx,
 		)) as AgentStartResult | undefined;
-		expect(result?.message?.content).toContain("Frontend rules v2");
+		expect(result?.message?.content).toContain("Use hooks v2");
 		expect(result?.message?.display).toBe(true);
 		expect(result?.message?.customType).toBe("pi-rules");
 	});
