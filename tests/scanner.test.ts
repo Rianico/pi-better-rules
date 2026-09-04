@@ -12,6 +12,7 @@ import {
 	expandBraces,
 	findMarkdownFiles,
 	formatLoadReport,
+	formatRuleList,
 	globToRegExp,
 	MAX_FILE_BYTES,
 	MAX_PATTERNS,
@@ -91,17 +92,13 @@ describe("findMarkdownFiles", () => {
 });
 
 describe("parseRule", () => {
-	it("parses system tier + paths and derives summary from heading", () => {
-		const abs = write(
-			"r.md",
-			'---\nmetadata:\n  rule_tier: system\npaths: ["src/**"]\n---\n# Title\nbody\n',
-		);
+	it("parses paths and derives summary from heading", () => {
+		const abs = write("r.md", '---\npaths: ["src/**"]\n---\n# Title\nbody\n');
 		const warns: string[] = [];
 		const rule = parseRule(abs, "r.md", "global", (m) => warns.push(m));
 		expect(rule).toMatchObject({
 			rel: "r.md",
 			scope: "global",
-			tier: "system",
 			paths: ["src/**"],
 			summary: "Title",
 			text: "# Title\nbody",
@@ -109,29 +106,22 @@ describe("parseRule", () => {
 		expect(warns).toEqual([]);
 	});
 
-	it("treats no frontmatter as valid unscoped general rule", () => {
+	it("treats no frontmatter as a valid unscoped rule", () => {
 		const abs = write("plain.md", "# Hello\nworld\n");
 		const rule = parseRule(abs, "plain.md", "project");
-		expect(rule).toMatchObject({ tier: "general", paths: undefined });
+		expect(rule).toMatchObject({ paths: undefined });
 		expect(rule?.summary).toBe("Hello");
 	});
 
-	it("defaults missing tier to general", () => {
-		const abs = write("g.md", '---\npaths: ["a/**"]\n---\nbody\n');
-		expect(parseRule(abs, "g.md", "global")?.tier).toBe("general");
-	});
-
-	it("warns on unknown tier and falls back to general", () => {
+	it("ignores metadata.rule_tier (tier retired, issue 14)", () => {
 		const abs = write(
-			"u.md",
-			"---\nmetadata:\n  rule_tier: cosmic\n---\nbody\n",
+			"g.md",
+			"---\nmetadata:\n  rule_tier: system\n---\nbody\n",
 		);
 		const warns: string[] = [];
-		const rule = parseRule(abs, "u.md", "global", (m) => warns.push(m));
-		expect(rule?.tier).toBe("general");
-		expect(warns).toHaveLength(1);
-		expect(warns[0]).toContain("cosmic");
-		expect(warns[0]).toContain("u.md");
+		const rule = parseRule(abs, "g.md", "global", (m) => warns.push(m));
+		expect(rule?.paths).toBeUndefined();
+		expect(warns).toEqual([]);
 	});
 
 	it("derives summary from first non-blank line, else rel path", () => {
@@ -199,18 +189,30 @@ describe("scanRules", () => {
 		expect(rules.map((r) => r.rel)).toEqual(["a.md", "z.md", "m.md"]);
 	});
 
-	it("formats the load report as pi-rules: N — S system, G general, C scoped", () => {
+	it("formats the load report as pi-rules: N — U unscoped, S scoped", () => {
 		const globalDir = tree(join(root, "g"), {
-			"sys.md": "---\nmetadata:\n  rule_tier: system\n---\n# S\n",
-			"gen.md": "# G\n",
+			"a.md": "# A\n",
+			"b.md": "# B\n",
 		});
 		const projectDir = tree(join(root, "p"), {
 			"scoped.md": '---\npaths: ["src/**"]\n---\n# Scoped\n',
 		});
 		const { rules } = scanRules(globalDir, projectDir);
 		expect(formatLoadReport(rules)).toBe(
-			"pi-rules: 3 rule(s) — 1 system, 1 general, 1 scoped",
+			"pi-rules: 3 rule(s) — 2 unscoped, 1 scoped",
 		);
+	});
+
+	it("lists each rule with scope and kind", () => {
+		expect(
+			formatRuleList([
+				{ rel: "a.md", scope: "global", paths: undefined },
+				{ rel: "s.md", scope: "project", paths: ["src/**"] },
+			]),
+		).toEqual([
+			"- a.md [global] — unscoped (always-on)",
+			"- s.md [project] — scoped (src/**)",
+		]);
 	});
 });
 
