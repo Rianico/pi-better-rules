@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Exemplar: well-structured bug report #38"
+    url: https://github.com/Rianico/dsh-better-edit/issues/38
+    about: Concise Summary → Environment → Repro → Expected/Actual → Impact — copy this structure
+  - name: "Ask a question — Discussions"
+    url: https://github.com/Rianico/dsh-better-edit/discussions
+    about: For questions/support, use Discussions instead of an issue

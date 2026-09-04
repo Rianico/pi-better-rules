@@ -1,0 +1,42 @@
+name: Verify and Release
+on:
+  repository_dispatch:
+    types: [semantic-release]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5  # zizmor: ignore[cache-poisoning]
+        with: { node-version: 26 }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+      - run: pnpm run lint && pnpm run typecheck && pnpm test
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5  # zizmor: ignore[cache-poisoning]
+        with: { node-version: 26 }
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with: { python-version: "3.12" }
+      - name: Clear Unreleased section (handoff to semantic-release)
+        run: python scripts/changelog-unreleased.py clear
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm dlx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HUSKY: "0"
