@@ -1,0 +1,91 @@
+name: "🐛 Bug report"
+description: Concise, paste-complete repro — see #38 as exemplar
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Is there an existing issue for this?
+      description: Please search to see if an issue already exists for the bug you encountered.
+      options:
+        - label: I have searched the existing issues
+          required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One line — what broke + failure mode (e.g. trailingDups silently drops `}` → brace imbalance)
+      placeholder: "Plugin 0.5.0 — trailingDups removes replacement's last line → brace imbalance"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: plugin/app version, module/file, trigger command
+      placeholder: |
+        - Version: 0.5.0
+        - Module: lib/hashline/anchor-pipeline.js
+        - Trigger: edit with remove_from/remove_to
+      value: |
+        - Version:
+        - Module:
+        - Trigger:
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal complete file + operation map + exact payload (paste-complete, prefer text over screenshots)
+      placeholder: |
+        1. Minimal file content (paste-complete):
+        ```cpp
+        void foo() { }
+        ```
+        2. Operation map / payload:
+        ```json
+        { "edits": [["<from>", "<to>", "<replacement_text>"]], "path": "D:\test.txt" }
+        ```
+        3. Run: `...`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen (paste expected file/diff)
+      placeholder: |
+        ```cpp
+        // 10 lines, brace-balanced
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened — quote diff / logs / autoFixes / balance delta
+      placeholder: |
+        ```json
+        {"kind":"trailing","removedLine":"\t}"}
+        ```
+        brace balance -1
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact & Trigger Conditions
+      description: When it fires, frequency, blast radius
+    validations:
+      required: false
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root Cause / Suggested Fixes (optional)
+      description: Hypothesis + numbered alternatives with tradeoff (threshold / fail-closed / symmetric range)
+    validations:
+      required: false
