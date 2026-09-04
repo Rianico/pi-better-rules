@@ -1,0 +1,15 @@
+# Worktrunk project config — environment as source of truth (see worktrunk-guide skill).
+# Project overrides ~/.config/worktrunk/config.toml.
+
+[post-start]
+copy = "wt step copy-ignored"
+
+[pre-merge]
+gate = "pnpm run lint && pnpm run typecheck && pnpm test && pnpm exec commitlint --from=origin/main --to=HEAD --verbose"
+
+[list]
+json-schema = 1
+url = "http://localhost:{{ branch | hash_port }}"
+
+[pre-remove]
+cleanup = "lsof -ti :{{ branch | hash_port }} | xargs kill 2>/dev/null || true"
