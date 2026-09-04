@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **rules:** scope-only model with load visibility (#2)
 - **packaging:** declare pi extension manifest entry
 - wire extension entry
 - implement rule scanner
@@ -19,6 +20,7 @@ All notable changes to this project will be documented in this file.
 
 ### Documentation
 
+- **changelog:** sync Unreleased with squash-merge PR reference
 - changelog header spacing
 - resolve entry, packaging, and guide tickets
 - add README rule-memory section and rule-authoring guide

@@ -2,7 +2,11 @@
  * Rule scanner — discovery + parsing + glob matching per spec §1, §2, §4.
  * Ported from `.scratch/rules-extension/prototype/pi-rules.ts` (logic reference):
  * fixes the prototype's over-budget fallback to literal matching per spec §4,
- * strips quoted tier values, and sorts `rel` ascending within each scope (§1 GAP).
+ * and sorts `rel` ascending within each scope (§1 GAP).
+ *
+ * Scope-only model (issue 14): no `tier`. `paths:` absent = unscoped
+ * (always-on, full content appended to the system prompt); `paths:` present
+ * = scoped (full content injected as a visible session message on activation).
  */
 import type { Dirent } from "node:fs";
 import {
@@ -14,14 +18,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-export type RuleTier = "system" | "general";
 export type RuleScope = "global" | "project";
 
 export interface Rule {
 	rel: string;
 	abs: string;
 	scope: RuleScope;
-	tier: RuleTier;
 	paths?: string[] | undefined;
 	summary: string;
 	text: string;
@@ -91,20 +93,6 @@ export function findMarkdownFiles(
 	return out;
 }
 
-function parseTier(frontmatter: string, rel: string, warn: Warn): RuleTier {
-	for (const line of frontmatter.split("\n")) {
-		const match = /^\s*rule_tier\s*:\s*(.+?)\s*$/.exec(line);
-		if (!match) continue;
-		const value = (match[1] ?? "").replace(/^["']|["']$/g, "");
-		if (value === "system" || value === "general") return value;
-		warn(
-			`${rel}: unknown metadata.rule_tier "${value}" — falling back to general`,
-		);
-		return "general";
-	}
-	return "general";
-}
-
 function parsePaths(frontmatter: string): string[] | undefined {
 	const at = frontmatter.search(/^\s*paths\s*:/m);
 	if (at < 0) return undefined;
@@ -135,7 +123,8 @@ export interface ParseOptions {
 
 /**
  * Parse one rule file. Returns null for oversize/unreadable files (hard-skip,
- * spec §4). A file with no frontmatter is a valid unscoped general rule (§1).
+ * spec §4). A file with no frontmatter is a valid unscoped rule (§1).
+ * A `metadata.rule_tier` key, if present, is ignored (tier retired, issue 14).
  */
 export function parseRule(
 	abs: string,
@@ -144,6 +133,7 @@ export function parseRule(
 	warn: Warn = noop,
 	opts: ParseOptions = {},
 ): Rule | null {
+	void warn;
 	const budget = opts.maxFileBytes ?? MAX_FILE_BYTES;
 	try {
 		if (statSync(abs).size > budget) return null;
@@ -153,7 +143,6 @@ export function parseRule(
 	const raw = readFileSync(abs, "utf8");
 	const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
 	const body = fm ? raw.slice(fm[0].length) : raw;
-	const tier = fm ? parseTier(fm[1] ?? "", rel, warn) : "general";
 	const paths = fm ? parsePaths(fm[1] ?? "") : undefined;
 	const heading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
 	const firstLine = body
@@ -166,7 +155,6 @@ export function parseRule(
 		rel,
 		abs,
 		scope,
-		tier,
 		paths,
 		summary,
 		text: body.trim(),
@@ -228,14 +216,24 @@ export function scanRules(
 
 /** Load report line emitted at info level after scan (spec §1). */
 export function formatLoadReport(rules: readonly Rule[]): string {
-	const system = rules.filter(
-		(r) => r.tier === "system" && r.paths === undefined,
-	).length;
-	const general = rules.filter(
-		(r) => r.tier === "general" && r.paths === undefined,
-	).length;
+	const unscoped = rules.filter((r) => r.paths === undefined).length;
 	const scoped = rules.filter((r) => r.paths !== undefined).length;
-	return `pi-rules: ${rules.length} rule(s) — ${system} system, ${general} general, ${scoped} scoped`;
+	return `pi-rules: ${rules.length} rule(s) — ${unscoped} unscoped, ${scoped} scoped`;
+}
+
+/** Per-rule detail lines for load notifications (issue 15). */
+export function formatRuleList(
+	rules: readonly {
+		readonly rel: string;
+		readonly scope: string;
+		readonly paths?: readonly string[] | undefined;
+	}[],
+): string[] {
+	return rules.map((rule) =>
+		rule.paths === undefined
+			? `- ${rule.rel} [${rule.scope}] — unscoped (always-on)`
+			: `- ${rule.rel} [${rule.scope}] — scoped (${rule.paths.join(", ")})`,
+	);
 }
 
 /** Expand the first `{a,b}` group recursively (Claude `paths:` semantics). */

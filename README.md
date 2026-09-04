@@ -1,27 +1,27 @@
 # pi-better-rules
 
-Pi extension that loads persistent rule memory from markdown files into every prompt — global conventions plus project conventions, with tiered injection and path-scoped activation.
+Pi extension that loads persistent rule memory from markdown files into every prompt — global conventions plus project conventions, with always-on rules and path-scoped activation.
 
 ## Rule memory (pi-better-rules)
 
-**What it does.** On `session_start` the extension scans two rule trees, caches the result in memory, and re-applies a `systemPrompt` override on every `before_agent_start`. Mid-run file touches are reconciled on `before_provider_request` via a `<!-- pi-rules:begin --> … <!-- pi-rules:end -->` marker block (strip + rebuild, idempotent under retries). After loading it reports `pi-rules: N rule(s) — S system, G general, C scoped` at `info` level. Rules never render as user-role messages — `systemPrompt` only.
+**What it does.** On `session_start` the extension scans two rule trees, caches the result in memory, appends unscoped full content to the `systemPrompt` on every `before_agent_start`, and appends newly activated scoped rules to the triggering `tool_result` content same-turn (cumulative inject-once). After loading it reports `pi-rules: N rule(s) — U unscoped, S scoped` at `info` level, followed by one detail line per rule and the trigger reason (full scan, checksum refresh, compaction retention); the scan summary also persists as a `pi-rules.scan` timeline entry, and `/rules` reprints load state on demand. Unscoped rules live in the system prompt; scoped rules ride tool results — never as user-role text.
 
 **Two rule locations.** Global rules live under `~/.pi/agent/rules`; project rules under `<project>/.pi/rules`. Both trees are scanned recursively for `**/*.md`, including subdirectories. Global loads first, project second, concatenated — on conflict project wins: an identical relative path in both trees is a shadow (the project copy replaces the global copy, no merge) and a load-time warning names the shadowed file. Files larger than 4 MiB are hard-skipped.
 
-**Tier × `paths:` matrix.** The tier comes from `metadata.rule_tier` (`system` | `general`, default `general`; unknown values warn and fall back to `general`). `paths:` is optional scoping with `**` / `*` / `?` / `{a,b}` / `[...]` / `\[` glob syntax (an invalid pattern matches nothing while siblings keep working). Tier is HOW the rule renders, `paths:` is WHEN:
+**Scope model.** `paths:` is optional scoping with `**` / `*` / `?` / `{a,b}` / `[...]` / backslash-escape glob syntax (an invalid pattern matches nothing while siblings keep working). Absent `paths:` means always-on; present `paths:` means conditional:
 
-| Tier | `paths:` absent (unscoped) | `paths:` present (scoped) |
+| Scope | Where it renders | When |
 | --- | --- | --- |
-| `system` | Full content injected every prompt | Full content injected while a match is active |
-| `general` | One index line every prompt; full text via the read tool | One index line while a match is active |
+| Unscoped (`paths:` absent) | Full content appended to the system prompt | Every prompt |
+| Scoped (`paths:` present) | Full content appended to the triggering tool result (`## Rules (scoped — matched for <file>)`) | Same-turn, once per rule (inject-once) |
 
-Keep the always-on (unscoped) set minimal — invariants only. Domain rules belong in `paths:`-scoped rules. Every `paths:`-scoped rule is compaction-evictable: persistent invariants belong in unscoped rules. Activation is cumulative per session — once a file touched by a `read`, `edit`, or `write` call activates a rule, it stays active (no mid-task flicker). `bash` carries no `path`, so it never activates scoped rules — documented limitation.
+Keep the always-on (unscoped) set minimal — invariants only. Domain rules belong in `paths:`-scoped rules. Every `paths:`-scoped rule is compaction-evictable: persistent invariants belong in unscoped rules. Each touched file matches against two bases — its repo-relative path and its bare filename — so bare `paths:` entries (e.g. `pyproject.toml`) fire for nested files. Paths come from the `tool_result` event (`read`/`edit` `input.path` plus `details.filePath`, `write` `filePath`/`path`), relativized against the session cwd, so absolute tool paths match too. Every injection warns `+N scoped rule(s) matched for <file>, matched pattern: <p>` with one bare `- <rel>` bullet per rule. `bash` carries no `path`, and error results never inject — documented limitations.
 
 **Freshness: snapshot, not live re-read.** The filesystem scan happens once per session and lives in module state; the per-prompt handler is cheap string concat. Edits to rule files mid-session do **not** take effect until a refresh:
 
 - `/reload` wipes extension memory, so checksums persist on disk as `pi-better-rules-checksums.json` — global copy under `~/.pi/agent/cache/`, project copy under `.pi/.cache/`.
-- On `session_start` with `reason === "reload"` the extension verifies checksums (list → stat pre-filter → checksum candidates): changed files reload, deleted files drop, and it reports `refreshed / added / removed` — unchanged rules keep byte-identical text. When nothing changed it reports `unchanged` and skips the rescan entirely. Other reasons (`startup | new | resume | fork`) always rescan.
-- A corrupt checksum cache is treated as everything-changed (rebuild) with a warning. Rule-load warnings (unknown tier, over-budget globs, corrupt cache, shadowed files) surface via `notify(message, "warning")`.
+- On `session_start` with `reason === "reload"` the extension verifies checksums (list → stat pre-filter → checksum candidates): changed files reload, deleted files drop, and it reports `refreshed / added / removed` with one `~`/`+`/`-` line per changed file plus the full rule list — unchanged rules keep byte-identical text. When nothing changed it reports `unchanged (checksums verified, no rescan)` plus the rule list and skips the rescan entirely. Other reasons (`startup | new | resume | fork`) always rescan with a full rule list. A `session_compact` handler notifies retention (cache untouched, no rescan).
+- A corrupt checksum cache is treated as everything-changed (rebuild) with a warning. Rule-load warnings (over-budget globs, corrupt cache, shadowed files) surface via `notify(message, "warning")`. Scoped injections name the matched file and the activating file.
 
 > [!tip]
 > Writing rules? See the [rule-authoring guide](docs/rules-authoring.md) — filename style, frontmatter examples, the shared-rules-via-symlink pattern, and version-control etiquette.

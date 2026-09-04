@@ -1,34 +1,38 @@
 import { describe, expect, it } from "vitest";
 import type { LifecycleRule, PathMatcher } from "../src/lifecycle.js";
 import {
-	buildRulesBlock,
+	buildScopedMessageContent,
+	buildScopedToolBlock,
 	buildSystemPromptOverride,
-	getActiveRules,
-	reconcileProviderPayload,
-	reconcileProviderSystemText,
-	trackToolCall,
+	candidateBases,
+	extractResultPaths,
+	findActivatingFile,
+	findActivation,
+	findMatchingPattern,
+	getActiveScopedRules,
+	getNewScopedRules,
+	getUnscopedRules,
+	matchFile,
+	relativize,
 } from "../src/lifecycle.js";
 
-const sysRule: LifecycleRule = {
-	rel: "sys.md",
+const unscopedA: LifecycleRule = {
+	rel: "a.md",
 	scope: "project",
-	tier: "system",
-	summary: "Sys",
-	text: "Be safe.",
+	summary: "A",
+	text: "Never leak secrets.",
 };
 
-const genRule: LifecycleRule = {
-	rel: "gen.md",
+const unscopedB: LifecycleRule = {
+	rel: "b.md",
 	scope: "global",
-	tier: "general",
-	summary: "General stuff",
-	text: "Full general text.",
+	summary: "B",
+	text: "General stuff full text.",
 };
 
-const scopedSysRule: LifecycleRule = {
+const scopedRule: LifecycleRule = {
 	rel: "frontend/react.md",
 	scope: "project",
-	tier: "system",
 	paths: ["src/**/*.tsx"],
 	summary: "React",
 	text: "Use hooks.",
@@ -38,185 +42,297 @@ const scopedSysRule: LifecycleRule = {
 const exactMatch: PathMatcher = (patterns, file) =>
 	patterns.some((p) => p === file);
 
-describe("trackToolCall", () => {
-	it("adds input.path on read", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "read", { path: "src/a.ts" })).toBe(true);
-		expect(touched.has("src/a.ts")).toBe(true);
+describe("extractResultPaths", () => {
+	it("reads input.path on read", () => {
+		expect(extractResultPaths("read", { path: "src/a.ts" }, undefined)).toEqual(
+			["src/a.ts"],
+		);
 	});
 
-	it("adds input.path on edit", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "edit", { path: "src/a.ts" })).toBe(true);
-		expect(touched.has("src/a.ts")).toBe(true);
+	it("reads input.path on edit", () => {
+		expect(extractResultPaths("edit", { path: "src/a.ts" }, undefined)).toEqual(
+			["src/a.ts"],
+		);
 	});
 
-	it("adds input.path on write without a prior read", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "write", { path: "src/new.ts" })).toBe(true);
-		expect(touched.has("src/new.ts")).toBe(true);
+	it("prefers details.filePath when present", () => {
+		expect(
+			extractResultPaths(
+				"read",
+				{ path: "rel/a.ts" },
+				{ filePath: "/repo/a.ts" },
+				"/repo",
+			),
+		).toEqual(["a.ts", "rel/a.ts"]);
+	});
+
+	it("reads write filePath then path", () => {
+		expect(
+			extractResultPaths("write", { filePath: "src/new.ts" }, undefined),
+		).toEqual(["src/new.ts"]);
+		expect(
+			extractResultPaths("write", { path: "src/new.ts" }, undefined),
+		).toEqual(["src/new.ts"]);
+	});
+
+	it("relativizes absolute paths against cwd", () => {
+		expect(
+			extractResultPaths(
+				"read",
+				{ path: "/repo/src/a.ts" },
+				undefined,
+				"/repo",
+			),
+		).toEqual(["src/a.ts"]);
 	});
 
 	it("ignores bash (no path trigger)", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "bash", { command: "ls" })).toBe(false);
-		expect(touched.size).toBe(0);
+		expect(extractResultPaths("bash", { command: "ls" }, undefined)).toEqual(
+			[],
+		);
 	});
 
 	it("ignores unknown tools even when a path is present", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "grep", { path: "src/a.ts" })).toBe(false);
-		expect(touched.size).toBe(0);
+		expect(extractResultPaths("grep", { path: "src/a.ts" }, undefined)).toEqual(
+			[],
+		);
 	});
 
 	it("ignores missing or non-string paths", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "read", {})).toBe(false);
-		expect(trackToolCall(touched, "read", { path: 42 })).toBe(false);
-		expect(trackToolCall(touched, "read", null)).toBe(false);
-		expect(touched.size).toBe(0);
-	});
-
-	it("is cumulative and idempotent", () => {
-		const touched = new Set<string>();
-		trackToolCall(touched, "read", { path: "a.ts" });
-		trackToolCall(touched, "write", { path: "b.ts" });
-		trackToolCall(touched, "read", { path: "a.ts" });
-		expect([...touched].sort()).toEqual(["a.ts", "b.ts"]);
+		expect(extractResultPaths("read", {}, undefined)).toEqual([]);
+		expect(extractResultPaths("read", { path: 42 }, undefined)).toEqual([]);
+		expect(extractResultPaths("read", null, undefined)).toEqual([]);
 	});
 });
 
-describe("getActiveRules", () => {
-	it("keeps unscoped rules always active", () => {
-		const active = getActiveRules([sysRule, genRule], new Set(), exactMatch);
-		expect(active.sys).toEqual([sysRule]);
-		expect(active.gen).toEqual([genRule]);
+describe("candidateBases", () => {
+	it("returns the path plus its bare filename", () => {
+		expect(candidateBases("a/b/pyproject.toml")).toEqual([
+			"a/b/pyproject.toml",
+			"pyproject.toml",
+		]);
 	});
 
+	it("returns a single base for bare filenames", () => {
+		expect(candidateBases("pyproject.toml")).toEqual(["pyproject.toml"]);
+	});
+});
+
+describe("matchFile", () => {
+	it("matches bare patterns against nested files via basename", () => {
+		expect(
+			matchFile(["pyproject.toml"], "a/b/pyproject.toml", exactMatch),
+		).toBe(true);
+		expect(matchFile(["pyproject.toml"], "a/b/other.toml", exactMatch)).toBe(
+			false,
+		);
+	});
+
+	it("still matches full relative paths", () => {
+		const matches: PathMatcher = (patterns, file) =>
+			patterns.some((p) => p === "src/**" && file.startsWith("src/"));
+		expect(matchFile(["src/**"], "src/a.ts", matches)).toBe(true);
+	});
+});
+
+describe("findMatchingPattern", () => {
+	it("returns the firing pattern, preferring earlier entries", () => {
+		const matches: PathMatcher = (patterns, file) =>
+			patterns.some((p) => p === "src/**" || p === "**/*.ts") &&
+			file.startsWith("src/");
+		expect(
+			findMatchingPattern(["src/**", "**/*.ts"], "src/a.ts", matches),
+		).toBe("src/**");
+	});
+
+	it("finds bare patterns via the basename base", () => {
+		expect(
+			findMatchingPattern(
+				["other.toml", "pyproject.toml"],
+				"a/b/pyproject.toml",
+				exactMatch,
+			),
+		).toBe("pyproject.toml");
+	});
+
+	it("returns undefined when nothing matches", () => {
+		expect(
+			findMatchingPattern(["src/**"], "docs/a.md", exactMatch),
+		).toBeUndefined();
+	});
+});
+
+describe("findActivation", () => {
+	it("returns the file plus the firing pattern", () => {
+		expect(
+			findActivation(scopedRule, new Set(["src/app.tsx"]), (_p, f) =>
+				f.endsWith(".tsx"),
+			),
+		).toEqual({
+			file: "src/app.tsx",
+			pattern: "src/**/*.tsx",
+		});
+	});
+
+	it("returns undefined when nothing matches", () => {
+		expect(
+			findActivation(scopedRule, new Set(["README.md"]), exactMatch),
+		).toBeUndefined();
+	});
+});
+describe("getUnscopedRules", () => {
+	it("returns only rules without paths", () => {
+		expect(getUnscopedRules([unscopedA, unscopedB, scopedRule])).toEqual([
+			unscopedA,
+			unscopedB,
+		]);
+	});
+
+	it("returns empty when all rules are scoped", () => {
+		expect(getUnscopedRules([scopedRule])).toEqual([]);
+	});
+});
+
+describe("getActiveScopedRules", () => {
 	it("leaves scoped rules inactive with an empty touched set", () => {
-		const active = getActiveRules([scopedSysRule], new Set(), exactMatch);
-		expect(active.sys).toEqual([]);
+		expect(getActiveScopedRules([scopedRule], new Set(), exactMatch)).toEqual(
+			[],
+		);
 	});
 
 	it("activates a scoped rule on a matching touch", () => {
 		const touched = new Set(["src/app.tsx"]);
 		const matches: PathMatcher = (patterns, file) =>
 			patterns.some((p) => p === "src/**/*.tsx" && file.endsWith(".tsx"));
-		const active = getActiveRules([scopedSysRule], touched, matches);
-		expect(active.sys).toEqual([scopedSysRule]);
+		expect(getActiveScopedRules([scopedRule], touched, matches)).toEqual([
+			scopedRule,
+		]);
 	});
 
 	it("stays active after later non-matching touches (cumulative)", () => {
 		const touched = new Set(["src/app.tsx", "README.md"]);
 		const matches: PathMatcher = (_patterns, file) => file === "src/app.tsx";
-		const active = getActiveRules([scopedSysRule], touched, matches);
-		expect(active.sys).toEqual([scopedSysRule]);
+		expect(getActiveScopedRules([scopedRule], touched, matches)).toEqual([
+			scopedRule,
+		]);
 	});
 
-	it("activates a scoped rule from a Write-without-Read touch", () => {
-		const touched = new Set<string>();
-		trackToolCall(touched, "write", { path: "src/fresh.tsx" });
+	it("activates a scoped rule from Write result paths", () => {
+		const touched = new Set(
+			extractResultPaths("write", { path: "src/fresh.tsx" }, undefined),
+		);
 		const matches: PathMatcher = (_patterns, file) => file === "src/fresh.tsx";
-		const active = getActiveRules([scopedSysRule], touched, matches);
-		expect(active.sys).toEqual([scopedSysRule]);
+		expect(getActiveScopedRules([scopedRule], touched, matches)).toEqual([
+			scopedRule,
+		]);
 	});
 
-	it("returns empty sets for no rules", () => {
-		const active = getActiveRules([], new Set(["a.ts"]), exactMatch);
-		expect(active.sys).toEqual([]);
-		expect(active.gen).toEqual([]);
+	it("ignores unscoped rules", () => {
+		expect(
+			getActiveScopedRules([unscopedA], new Set(["a.ts"]), exactMatch),
+		).toEqual([]);
+	});
+});
+
+describe("getNewScopedRules", () => {
+	it("returns active rules not yet injected", () => {
+		expect(getNewScopedRules([scopedRule], new Set())).toEqual([scopedRule]);
+	});
+
+	it("filters out already-injected rels (inject-once)", () => {
+		expect(
+			getNewScopedRules([scopedRule], new Set(["frontend/react.md"])),
+		).toEqual([]);
 	});
 });
 
 describe("buildSystemPromptOverride", () => {
-	it("returns undefined when no rules are active", () => {
+	it("returns undefined when no unscoped rules exist", () => {
+		expect(buildSystemPromptOverride("base", [])).toBeUndefined();
+	});
+
+	it("renders unscoped full content like an appended system prompt", () => {
+		expect(buildSystemPromptOverride("base prompt", [unscopedA])).toBe(
+			"base prompt\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
+		);
+	});
+
+	it("renders multiple unscoped rules", () => {
+		expect(buildSystemPromptOverride("base", [unscopedA, unscopedB])).toBe(
+			"base\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.\n\n--- b.md [global] ---\nGeneral stuff full text.",
+		);
+	});
+
+	it("returns the section alone when base is empty", () => {
+		expect(buildSystemPromptOverride("", [unscopedA])).toBe(
+			"## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
+		);
+	});
+});
+
+describe("buildScopedToolBlock", () => {
+	it("returns undefined when no rules are given", () => {
+		expect(buildScopedToolBlock([], "src/a.ts")).toBeUndefined();
+		expect(buildScopedMessageContent([])).toBeUndefined();
+	});
+
+	it("appends full content naming the matched target", () => {
+		const block = buildScopedToolBlock([scopedRule], "src/app.tsx");
+		expect(block).toContain("## Rules (scoped — matched for src/app.tsx)");
+		expect(block).toContain("--- frontend/react.md [project] ---");
+		expect(block).toContain("Use hooks.");
+	});
+
+	it("appends the activating file when reasons are given", () => {
+		const block = buildScopedToolBlock(
+			[scopedRule],
+			"src/app.tsx",
+			new Map([["frontend/react.md", "src/app.tsx"]]),
+		);
+		expect(block).toContain("Activated by `src/app.tsx`");
+	});
+
+	it("finds the first touched file matching a scoped rule", () => {
 		expect(
-			buildSystemPromptOverride("base", { sys: [], gen: [] }),
+			findActivatingFile(
+				scopedRule,
+				new Set(["README.md", "src/a.ts"]),
+				(_p, f) => f.startsWith("src/"),
+			),
+		).toBe("src/a.ts");
+		expect(
+			findActivatingFile(scopedRule, new Set(["README.md"]), exactMatch),
 		).toBeUndefined();
 	});
-
-	it("renders system full plus general index", () => {
-		expect(
-			buildSystemPromptOverride("base prompt", {
-				sys: [sysRule],
-				gen: [genRule],
-			}),
-		).toBe(
-			"base prompt\n\n## Rules: system tier (full)\n### sys.md [project]\nBe safe.\n\n## Rules: general tier (index — use the read tool for full text)\n- gen.md [global] — General stuff",
+	it("splits rules with rel separators and preserves original bodies", () => {
+		const titled: LifecycleRule = {
+			rel: "t.md",
+			scope: "global",
+			summary: "T",
+			text: "# T\n\nBody text.",
+		};
+		expect(buildSystemPromptOverride("base", [titled])).toBe(
+			"base\n\n## Rules (always-on)\n--- t.md [global] ---\n# T\n\nBody text.",
 		);
-	});
-
-	it("skips the system section when only general rules are active", () => {
-		expect(buildSystemPromptOverride("base", { sys: [], gen: [genRule] })).toBe(
-			"base\n\n## Rules: general tier (index — use the read tool for full text)\n- gen.md [global] — General stuff",
-		);
-	});
-
-	it("skips the general section when only system rules are active", () => {
-		expect(buildSystemPromptOverride("base", { sys: [sysRule], gen: [] })).toBe(
-			"base\n\n## Rules: system tier (full)\n### sys.md [project]\nBe safe.",
+		expect(buildScopedMessageContent([titled])).toBe(
+			"## Rules (scoped — activated by touched files)\n--- t.md [global] ---\n# T\n\nBody text.",
 		);
 	});
 });
 
-describe("buildRulesBlock", () => {
-	it("wraps sections in markers", () => {
-		expect(buildRulesBlock({ sys: [sysRule], gen: [] })).toBe(
-			"<!-- pi-rules:begin -->\n## Rules: system tier (full)\n### sys.md [project]\nBe safe.\n<!-- pi-rules:end -->",
-		);
+describe("relativize", () => {
+	it("strips the cwd prefix from absolute paths", () => {
+		expect(relativize("/repo/src/a.ts", "/repo")).toBe("src/a.ts");
+		expect(relativize("/repo/src/a.ts", "/repo/")).toBe("src/a.ts");
 	});
 
-	it("returns undefined when no rules are active", () => {
-		expect(buildRulesBlock({ sys: [], gen: [] })).toBeUndefined();
-	});
-});
-
-describe("reconcileProviderSystemText", () => {
-	const active = { sys: [sysRule], gen: [genRule] };
-
-	it("appends the marker block to system text", () => {
-		const out = reconcileProviderSystemText("hello", active);
-		expect(out).toContain("hello");
-		expect(out).toContain("<!-- pi-rules:begin -->");
-		expect(out).toContain("### sys.md [project]\nBe safe.");
-		expect(out).toContain("- gen.md [global] — General stuff");
-		expect(out).toContain("<!-- pi-rules:end -->");
+	it("passes through relative paths and paths outside cwd", () => {
+		expect(relativize("src/a.ts", "/repo")).toBe("src/a.ts");
+		expect(relativize("/other/a.ts", "/repo")).toBe("/other/a.ts");
+		expect(relativize("src/a.ts", "")).toBe("src/a.ts");
 	});
 
-	it("strips a stale block and rebuilds", () => {
-		const stale = `hello\n<!-- pi-rules:begin -->\nSTALE\n<!-- pi-rules:end -->`;
-		const out = reconcileProviderSystemText(stale, active);
-		expect(out).not.toContain("STALE");
-		expect(out).toContain("### sys.md [project]");
-		expect(out.match(/<!-- pi-rules:begin -->/g)).toHaveLength(1);
-	});
-
-	it("is idempotent under retries", () => {
-		const once = reconcileProviderSystemText("hello", active);
-		expect(reconcileProviderSystemText(once, active)).toBe(once);
-	});
-
-	it("removes the block when no rules are active", () => {
-		const stale = `hello\n<!-- pi-rules:begin -->\nSTALE\n<!-- pi-rules:end -->`;
-		expect(reconcileProviderSystemText(stale, { sys: [], gen: [] })).toBe(
-			"hello",
-		);
-	});
-});
-
-describe("reconcileProviderPayload", () => {
-	const active = { sys: [sysRule], gen: [] };
-
-	it("passes the payload through untouched without a string system field", () => {
-		const absent = { prompt: "hi" };
-		expect(reconcileProviderPayload(absent, active)).toBe(absent);
-		const nonString = { system: 42 };
-		expect(reconcileProviderPayload(nonString, active)).toBe(nonString);
-	});
-
-	it("reconciles the system field when present", () => {
-		const out = reconcileProviderPayload({ system: "hello" }, active);
-		expect(out.system).toContain("<!-- pi-rules:begin -->");
-		expect(out.system).toContain("### sys.md [project]");
+	it("does not strip partial directory names", () => {
+		expect(relativize("/repo-other/a.ts", "/repo")).toBe("/repo-other/a.ts");
 	});
 });
