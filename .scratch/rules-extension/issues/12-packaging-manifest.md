@@ -1,7 +1,7 @@
 # Extension packaging + manifest
 
 Type: feat
-Status: open
+Status: resolved
 Blocked by: 11
 
 ## Question

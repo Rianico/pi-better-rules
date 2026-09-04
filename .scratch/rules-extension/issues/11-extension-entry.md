@@ -1,7 +1,7 @@
 # Extension entry wiring
 
 Type: feat
-Status: open
+Status: resolved
 Blocked by: 08, 09, 10
 
 ## Question

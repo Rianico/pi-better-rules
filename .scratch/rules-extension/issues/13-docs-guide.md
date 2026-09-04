@@ -1,7 +1,7 @@
 # README + rule-authoring guide
 
 Type: docs
-Status: open
+Status: resolved
 Blocked by: 11
 
 ## Question
