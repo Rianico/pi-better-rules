@@ -21,6 +21,7 @@ A locked, build-ready spec for a Pi rules extension — global `~/.pi/agent/rule
 - [Lifecycle and reload semantics](issues/05-lifecycle-and-reload-semantics.md): tier controls how / `paths:` controls when (4-cell matrix); both tiers render into the per-prompt `systemPrompt` override; activation set is cumulative session files with Read+Write trigger (fixes the Claude Write-hole); checksum-gated refresh persisted as `pi-better-rules-checksums.json` (global `~/.pi/agent/cache/`, project `.pi/.cache/` gitignored), verified on `/reload` and explicit refresh with refreshed/added/removed report.
 - [Scope-only model](issues/14-scope-only-model.md): tier retired (supersedes 04/05 tier decisions) — unscoped rules append full content to the system prompt every prompt, scoped rules inject once as visible `pi-rules` messages on activation; `metadata.rule_tier` ignored; `before_provider_request` marker reconcile removed (dead on Responses-API providers).
 - [Load visibility](issues/15-load-visibility.md): every load trigger notifies what+why — full rule list with trigger reason on startup/reload, per-file change lines on checksum refresh, retention notice on `session_compact`, activating file in scoped messages.
+- [Same-turn scoped injection](issues/16-tool-result-injection.md): pi-rules `tool_result` port (supersedes the 14 next-turn message path) — scoped rules append to the triggering result same-turn, multi-base matching (rel path + basename), `pi-rules.scan` timeline entries, `/rules` status/show command; inject-once per rel preserved.
 
 ## Not yet specified
 

@@ -32,17 +32,17 @@ Trace key: each MUST ends with its source ticket in brackets, e.g. `[03]`. `GAP:
 
 ### 3.1 Activation set
 
-- MUST maintain a cumulative session set of touched files: once a file activates a rule it stays active for the session (no mid-task flicker) [05].
-- MUST add to the touched set on `read`, `edit`, and `write` tool calls carrying `input.path` (Read+Write trigger — deliberately fixes anthropics/claude-code#23478 where Write-without-Read never fires scoped rules) [05-Q5b, 05-round-3].
-- MUST ground tool detection in `ToolCallEvent { toolName, input }`; `bash` (no `path`) is excluded — documented limitation [05-round-3].
+- MUST match scoped rules same-turn in `tool_result` (pi-rules dynamic style): extract touched paths from the result event (`read`/`edit` `input.path` plus `details.filePath`, `write` `filePath`/`path`), relativized against `ctx.cwd` [05-round-3].
+- MUST try two path bases per touched file — the repo-relative path and its bare filename — so bare `paths:` entries (e.g. `pyproject.toml`) match nested files [16].
+- MUST ground tool detection in the `tool_result` event; `bash` (no path) and error results never activate — documented limitation [05-round-3].
 - MUST NOT evict rule text on compaction: eviction applies to the compaction summary only; rules re-render from cache each prompt [05].
 
 ### 3.2 Prompt injection
 
-- MUST append unscoped full content to the per-prompt `systemPrompt` override — never a user-role message; scoped rules are injected as session messages instead [05, 14].
+- MUST append unscoped full content to the per-prompt `systemPrompt` override — never a user-role message; scoped rules are appended to the triggering tool result instead [05, 14, 16].
 - MUST re-apply the override on every `before_agent_start` (it runs once per user prompt and its result is ephemeral — cache the fs scan in module state at `session_start`, keep the handler to cheap string concat) [01].
 - MUST format the per-prompt render as `## Rules (always-on)` followed by one `--- rel [scope] ---` separator plus the original body per rule; return nothing when no unscoped rules exist [06, 14].
-- MUST inject newly activated scoped rules as one visible message (`customType: "pi-rules"`, `display: true`) with `## Rules (scoped — activated by touched files)`, one `--- rel [scope] ---` separator plus the original body per rule, each annotated with its activating file; track injected rels in module state and never re-inject (cumulative inject-once) [14].
+- MUST append newly activated scoped rules to the triggering `tool_result` content as `\n\n## Rules (scoped — matched for <target>)` with one `--- rel [scope] ---` separator plus the original body per rule, each annotated with its activating file; notify `+N scoped rule(s) matched for <target>`; track injected rels in module state and never re-inject (cumulative inject-once) [14, 16].
 - MUST notify retention on `session_compact` (notification-only, no state work): the in-memory cache survives compaction untouched [15].
 - MUST rely on the proven fact that compaction never touches the system prompt (held separately as `agent.state.systemPrompt`) while re-injecting per prompt from cache [01].
 
@@ -71,8 +71,8 @@ Trace key: each MUST ends with its source ticket in brackets, e.g. `[03]`. `GAP:
 | Handler | MUST |
 | --- | --- |
 | `session_start` | Build `checksumsPath` from `ctx.cwd`; bind `notifyWarn` to `ctx.ui.notify(msg, "warning")`; `reason === "reload"` → checksum-verify + rescan-only-if-changed + unchanged/changed report; else full scan [01, 05-Q6, 06] |
-| `tool_call` | Add `input.path` to the touched set for `read` / `edit` / `write` only [05-round-3] |
-| `before_agent_start` | Append unscoped full content to the `systemPrompt` override and inject newly activated scoped rules as one visible message; return nothing when no rules exist at all [01, 06, 14] |
+| `tool_result` | Extract touched paths for `read` / `edit` / `write` only; append newly activated scoped rules to the result content same-turn (cumulative inject-once); skip error results [05-round-3, 16] |
+| `before_agent_start` | Append unscoped full content to the `systemPrompt` override; return nothing when no unscoped rules exist [01, 06, 14] |
 | `session_compact` | Notify retention with the rule list; no state work — the cache survives compaction untouched [15] |
 
 A `session_compact` handler notifies retention only; no rescan or state work runs on compaction [01, 15].

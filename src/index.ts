@@ -22,15 +22,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CacheHooks, FileStat } from "./cache.js";
 import { projectCachePath, refreshCache, verifyChecksums } from "./cache.js";
-import type { LifecycleRule, PathMatcher, ScopedMessage } from "./lifecycle.js";
+import type { LifecycleRule, PathMatcher } from "./lifecycle.js";
 import {
-	buildScopedMessage,
+	buildScopedToolBlock,
 	buildSystemPromptOverride,
+	extractResultPaths,
 	findActivatingFile,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
-	trackToolCall,
 } from "./lifecycle.js";
 import type { Rule, Warn } from "./scanner.js";
 import {
@@ -46,18 +46,36 @@ export interface SessionStartEvent {
 	readonly reason: "startup" | "reload" | "new" | "resume" | "fork";
 }
 
-export interface ToolCallEvent {
-	readonly type: "tool_call";
+export interface TextContent {
+	readonly type: "text";
+	readonly text: string;
+}
+
+export interface ToolResultEvent {
+	readonly type: "tool_result";
 	readonly toolName: string;
-	readonly input: unknown;
+	readonly input: Record<string, unknown>;
+	readonly details?: unknown;
+	readonly content: TextContent[];
+	readonly isError: boolean;
 }
 
-export interface ScopedRuleMessage {
-	readonly customType: "pi-rules";
-	readonly content: string;
-	readonly display: true;
+export interface ToolResultEventResult {
+	readonly content?: TextContent[];
 }
 
+export interface ExtensionCommandContext {
+	readonly cwd: string;
+	readonly ui: ExtensionUI;
+}
+
+export interface ExtensionCommandOptions {
+	readonly description?: string;
+	readonly handler: (
+		args: string,
+		ctx: ExtensionCommandContext,
+	) => Promise<void> | void;
+}
 export interface BeforeAgentStartEvent {
 	readonly type: "before_agent_start";
 	readonly prompt: string;
@@ -84,8 +102,8 @@ export interface ExtensionAPI {
 		handler: (event: SessionStartEvent, ctx: ExtensionContext) => unknown,
 	): void;
 	on(
-		event: "tool_call",
-		handler: (event: ToolCallEvent, ctx: ExtensionContext) => unknown,
+		event: "tool_result",
+		handler: (event: ToolResultEvent, ctx: ExtensionContext) => unknown,
 	): void;
 	on(
 		event: "before_agent_start",
@@ -95,11 +113,12 @@ export interface ExtensionAPI {
 		event: "session_compact",
 		handler: (event: SessionCompactEvent, ctx: ExtensionContext) => unknown,
 	): void;
+	registerCommand(name: string, options: ExtensionCommandOptions): void;
+	appendEntry<T = unknown>(customType: string, data?: T): void;
 }
 
 interface EntryState {
 	rules: LifecycleRule[];
-	touched: Set<string>;
 	injected: Set<string>;
 	checksumsPath: string;
 }
@@ -145,6 +164,31 @@ function pruneInjected(state: EntryState): void {
 	}
 }
 
+/** Persist a scan summary to the session timeline (visible in session exports). */
+function recordScanEntry(
+	pi: ExtensionAPI,
+	reason: string,
+	state: EntryState,
+): void {
+	if (typeof pi.appendEntry !== "function") return;
+	pi.appendEntry("pi-rules.scan", {
+		reason,
+		rules: state.rules.map((rule) => rule.rel),
+	});
+}
+
+/** On-demand `/rules` status: what loaded plus inject-once state. */
+function buildRulesStatus(state: EntryState): string {
+	const unscoped = state.rules.filter(
+		(rule) => rule.paths === undefined,
+	).length;
+	const scoped = state.rules.length - unscoped;
+	const lines = state.rules.map(
+		(rule) =>
+			`- ${rule.rel} [${rule.scope}] — ${rule.paths === undefined ? "unscoped (always-on)" : `scoped (${rule.paths.join(", ")})`}${state.injected.has(rule.rel) ? " · injected" : ""}`,
+	);
+	return `pi-rules: ${state.rules.length} rule(s) — ${unscoped} unscoped, ${scoped} scoped\n${lines.join("\n")}`;
+}
 /** Render an abs checksum path as `rel [scope]` for change reports. */
 function describeAbs(
 	absPath: string,
@@ -163,10 +207,33 @@ function describeAbs(
 export default function piBetterRules(pi: ExtensionAPI): void {
 	const state: EntryState = {
 		rules: [],
-		touched: new Set<string>(),
 		injected: new Set<string>(),
 		checksumsPath: "",
 	};
+
+	pi.registerCommand("rules", {
+		description: "Show loaded pi-better-rules and scoped injection state.",
+		handler: (args, cmdCtx) => {
+			const [sub, ...rest] = args.trim().split(/\s+/);
+			if (sub === "show") {
+				const id = rest[0] ?? "";
+				const rule = state.rules.find(
+					(candidate) =>
+						candidate.rel === id || candidate.rel.endsWith(`/${id}`),
+				);
+				if (rule === undefined) {
+					cmdCtx.ui.notify(`pi-rules: no rule matching \`${id}\``, "warning");
+				} else {
+					cmdCtx.ui.notify(
+						`--- ${rule.rel} [${rule.scope}] ---\n${rule.text}`,
+						"info",
+					);
+				}
+				return;
+			}
+			cmdCtx.ui.notify(buildRulesStatus(state), "info");
+		},
+	});
 
 	pi.on("session_start", async (event, ctx) => {
 		const warn: Warn = (message) => {
@@ -188,6 +255,7 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 					`pi-rules: ${state.rules.length} rule(s) — unchanged (checksums verified, no rescan)\n${formatRuleList(state.rules).join("\n")}`,
 					"info",
 				);
+				recordScanEntry(pi, "reload-unchanged", state);
 				return;
 			}
 			const scanned = scanRules(globalDir, projectDir, { warn }).rules;
@@ -209,57 +277,63 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 				`pi-rules: refreshed ${report.refreshed.length}, added ${report.added.length}, removed ${report.removed.length} (checksum changes detected)\n${changes}\n${formatRuleList(state.rules).join("\n")}`,
 				"info",
 			);
+			recordScanEntry(pi, "reload", state);
 			return;
 		}
 
 		const scanned = scanRules(globalDir, projectDir, { warn }).rules;
 		state.rules = toLifecycleRules(scanned);
-		state.touched.clear();
 		state.injected.clear();
 		await refreshCache(state.checksumsPath, hooks, warn);
 		ctx.ui.notify(
 			`${formatLoadReport(scanned)} (full scan on ${event.reason})\n${formatRuleList(scanned).join("\n")}`,
 			"info",
 		);
+		recordScanEntry(pi, event.reason, state);
 	});
 
-	pi.on("tool_call", (event) => {
-		trackToolCall(state.touched, event.toolName, event.input);
-	});
-
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("tool_result", (event, ctx) => {
+		if (event.isError) return undefined;
 		const warn: Warn = (message) => {
 			ctx.ui.notify(message, "warning");
 		};
 		const matches: PathMatcher = (patterns, file) =>
 			matchesAny([...patterns], file, warn);
+		const files = extractResultPaths(
+			event.toolName,
+			event.input,
+			event.details,
+			ctx.cwd,
+		);
+		if (files.length === 0) return undefined;
+		const touched = new Set(files);
+		const fresh = getNewScopedRules(
+			getActiveScopedRules(state.rules, touched, matches),
+			state.injected,
+		);
+		if (fresh.length === 0) return undefined;
+		const activatedBy = new Map<string, string>();
+		for (const rule of fresh) {
+			const cause = findActivatingFile(rule, touched, matches);
+			if (cause !== undefined) activatedBy.set(rule.rel, cause);
+		}
+		const target = files[0] ?? "touched files";
+		const block = buildScopedToolBlock(fresh, target, activatedBy);
+		if (block === undefined) return undefined;
+		for (const rule of fresh) state.injected.add(rule.rel);
+		ctx.ui.notify(
+			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target} (${fresh.map((rule) => rule.rel).join(", ")})`,
+			"info",
+		);
+		return { content: [...event.content, { type: "text", text: block }] };
+	});
+	pi.on("before_agent_start", (event) => {
 		const override = buildSystemPromptOverride(
 			event.systemPrompt,
 			getUnscopedRules(state.rules),
 		);
-		const activeScoped = getActiveScopedRules(
-			state.rules,
-			state.touched,
-			matches,
-		);
-		const fresh = getNewScopedRules(activeScoped, state.injected);
-		let message: ScopedMessage | ScopedRuleMessage | undefined;
-		if (fresh.length > 0) {
-			const activatedBy = new Map<string, string>();
-			for (const rule of fresh) {
-				const cause = findActivatingFile(rule, state.touched, matches);
-				if (cause !== undefined) activatedBy.set(rule.rel, cause);
-			}
-			message = buildScopedMessage(fresh, activatedBy);
-			if (message !== undefined) {
-				for (const rule of fresh) state.injected.add(rule.rel);
-			}
-		}
-		if (override === undefined && message === undefined) return undefined;
-		if (override !== undefined && message !== undefined)
-			return { systemPrompt: override, message };
-		if (override !== undefined) return { systemPrompt: override };
-		return { message };
+		if (override === undefined) return undefined;
+		return { systemPrompt: override };
 	});
 
 	pi.on("session_compact", (event, ctx) => {

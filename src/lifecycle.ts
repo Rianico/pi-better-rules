@@ -22,30 +22,63 @@ export type PathMatcher = (
 ) => boolean;
 
 /** Custom message type for injected scoped rules. */
-export const RULES_MESSAGE_TYPE = "pi-rules";
-
-export interface ScopedMessage {
-	readonly customType: typeof RULES_MESSAGE_TYPE;
-	readonly content: string;
-	readonly display: true;
-}
 
 const ACTIVATION_TOOLS: readonly string[] = ["read", "edit", "write"];
 
-/** Record a tool call's file in the cumulative session touched set. */
-export function trackToolCall(
-	touched: Set<string>,
-	toolName: string,
-	input: unknown,
-): boolean {
-	if (!ACTIVATION_TOOLS.includes(toolName)) return false;
-	if (typeof input !== "object" || input === null) return false;
-	const candidate: unknown = (input as { path?: unknown }).path;
-	if (typeof candidate !== "string") return false;
-	touched.add(candidate);
-	return true;
+/** Path bases tried per file: the repo-relative path plus its bare filename.
+ * Bare `paths:` entries (e.g. `pyproject.toml`) match nested files via the basename. */
+export function candidateBases(file: string): readonly string[] {
+	const base = file.split("/").pop() ?? "";
+	if (base === "" || base === file) return [file];
+	return [file, base];
 }
 
+/** Multi-base match: a rule matches when any pattern hits any candidate base. */
+export function matchFile(
+	patterns: readonly string[],
+	file: string,
+	matches: PathMatcher,
+): boolean {
+	return candidateBases(file).some((base) => matches(patterns, base));
+}
+
+/** Repo-relative file paths touched by a tool result (read/edit `path`,
+ * write `filePath`/`path`; absolute paths are relativized against cwd).
+ * Returns empty for untracked tools — bash output never activates rules. */
+export function extractResultPaths(
+	toolName: string,
+	input: unknown,
+	details: unknown,
+	cwd = "",
+): string[] {
+	if (!ACTIVATION_TOOLS.includes(toolName)) return [];
+	const found = new Set<string>();
+	const add = (value: unknown): void => {
+		if (typeof value === "string" && value !== "")
+			found.add(relativize(value, cwd));
+	};
+	const field = (holder: unknown, name: string): string | undefined => {
+		if (typeof holder !== "object" || holder === null) return undefined;
+		const value = (holder as Record<string, unknown>)[name];
+		return typeof value === "string" ? value : undefined;
+	};
+	if (toolName === "read" || toolName === "edit") {
+		add(field(details, "filePath"));
+		add(field(input, "path"));
+	} else if (toolName === "write") {
+		add(field(input, "filePath") ?? field(input, "path"));
+	}
+	return [...found];
+}
+
+/** Strip the cwd prefix so repo-relative `paths:` match absolute tool paths.
+ * Absolute paths outside cwd and already-relative paths pass through. */
+export function relativize(path: string, cwd: string): string {
+	if (cwd === "") return path;
+	const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+	if (path.startsWith(prefix)) return path.slice(prefix.length);
+	return path;
+}
 /** Unscoped rules (no `paths:`) — always on. */
 export function getUnscopedRules(
 	rules: readonly LifecycleRule[],
@@ -62,7 +95,7 @@ export function getActiveScopedRules(
 	return rules.filter(
 		(rule) =>
 			rule.paths !== undefined &&
-			[...touched].some((file) => matches(rule.paths ?? [], file)),
+			[...touched].some((file) => matchFile(rule.paths ?? [], file, matches)),
 	);
 }
 
@@ -109,35 +142,45 @@ export function findActivatingFile(
 ): string | undefined {
 	if (rule.paths === undefined) return undefined;
 	for (const file of touched) {
-		if (matches(rule.paths, file)) return file;
+		if (matchFile(rule.paths, file, matches)) return file;
 	}
 	return undefined;
 }
 
-/** Full-content body for a scoped message (one message per activation batch). */
+/** One scoped section with its activating file (why-it-loaded). */
+function formatScopedSection(
+	rule: LifecycleRule,
+	activatedBy?: ReadonlyMap<string, string>,
+): string {
+	const section = formatRuleSection(rule);
+	const cause = activatedBy?.get(rule.rel);
+	return cause === undefined
+		? section
+		: `${section}\n_Activated by \`${cause}\`._`;
+}
+
+/** Full-content body for newly activated scoped rules (next-turn message path). */
 export function buildScopedMessageContent(
 	rules: readonly LifecycleRule[],
 	activatedBy?: ReadonlyMap<string, string>,
 ): string | undefined {
 	if (rules.length === 0) return undefined;
 	const body = rules
-		.map((rule) => {
-			const section = formatRuleSection(rule);
-			const cause = activatedBy?.get(rule.rel);
-			return cause === undefined
-				? section
-				: `${section}\n_Activated by \`${cause}\`._`;
-		})
+		.map((rule) => formatScopedSection(rule, activatedBy))
 		.join("\n\n");
 	return `## Rules (scoped — activated by touched files)\n${body}`;
 }
 
-/** Visible session message for newly activated scoped rules. */
-export function buildScopedMessage(
+/** Same-turn tool-result block appended to the triggering result's content
+ * (pi-rules dynamic style): visible immediately, persisted in the transcript. */
+export function buildScopedToolBlock(
 	rules: readonly LifecycleRule[],
+	target: string,
 	activatedBy?: ReadonlyMap<string, string>,
-): ScopedMessage | undefined {
-	const content = buildScopedMessageContent(rules, activatedBy);
-	if (content === undefined) return undefined;
-	return { customType: RULES_MESSAGE_TYPE, content, display: true };
+): string | undefined {
+	if (rules.length === 0) return undefined;
+	const body = rules
+		.map((rule) => formatScopedSection(rule, activatedBy))
+		.join("\n\n");
+	return `\n\n## Rules (scoped — matched for ${target})\n\n${body}`;
 }

@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { LifecycleRule, PathMatcher } from "../src/lifecycle.js";
 import {
-	buildScopedMessage,
 	buildScopedMessageContent,
+	buildScopedToolBlock,
 	buildSystemPromptOverride,
+	candidateBases,
+	extractResultPaths,
 	findActivatingFile,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
-	RULES_MESSAGE_TYPE,
-	trackToolCall,
+	matchFile,
+	relativize,
 } from "../src/lifecycle.js";
 
 const unscopedA: LifecycleRule = {
@@ -38,54 +40,98 @@ const scopedRule: LifecycleRule = {
 const exactMatch: PathMatcher = (patterns, file) =>
 	patterns.some((p) => p === file);
 
-describe("trackToolCall", () => {
-	it("adds input.path on read", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "read", { path: "src/a.ts" })).toBe(true);
-		expect(touched.has("src/a.ts")).toBe(true);
+describe("extractResultPaths", () => {
+	it("reads input.path on read", () => {
+		expect(extractResultPaths("read", { path: "src/a.ts" }, undefined)).toEqual(
+			["src/a.ts"],
+		);
 	});
 
-	it("adds input.path on edit", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "edit", { path: "src/a.ts" })).toBe(true);
-		expect(touched.has("src/a.ts")).toBe(true);
+	it("reads input.path on edit", () => {
+		expect(extractResultPaths("edit", { path: "src/a.ts" }, undefined)).toEqual(
+			["src/a.ts"],
+		);
 	});
 
-	it("adds input.path on write without a prior read", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "write", { path: "src/new.ts" })).toBe(true);
-		expect(touched.has("src/new.ts")).toBe(true);
+	it("prefers details.filePath when present", () => {
+		expect(
+			extractResultPaths(
+				"read",
+				{ path: "rel/a.ts" },
+				{ filePath: "/repo/a.ts" },
+				"/repo",
+			),
+		).toEqual(["a.ts", "rel/a.ts"]);
+	});
+
+	it("reads write filePath then path", () => {
+		expect(
+			extractResultPaths("write", { filePath: "src/new.ts" }, undefined),
+		).toEqual(["src/new.ts"]);
+		expect(
+			extractResultPaths("write", { path: "src/new.ts" }, undefined),
+		).toEqual(["src/new.ts"]);
+	});
+
+	it("relativizes absolute paths against cwd", () => {
+		expect(
+			extractResultPaths(
+				"read",
+				{ path: "/repo/src/a.ts" },
+				undefined,
+				"/repo",
+			),
+		).toEqual(["src/a.ts"]);
 	});
 
 	it("ignores bash (no path trigger)", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "bash", { command: "ls" })).toBe(false);
-		expect(touched.size).toBe(0);
+		expect(extractResultPaths("bash", { command: "ls" }, undefined)).toEqual(
+			[],
+		);
 	});
 
 	it("ignores unknown tools even when a path is present", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "grep", { path: "src/a.ts" })).toBe(false);
-		expect(touched.size).toBe(0);
+		expect(extractResultPaths("grep", { path: "src/a.ts" }, undefined)).toEqual(
+			[],
+		);
 	});
 
 	it("ignores missing or non-string paths", () => {
-		const touched = new Set<string>();
-		expect(trackToolCall(touched, "read", {})).toBe(false);
-		expect(trackToolCall(touched, "read", { path: 42 })).toBe(false);
-		expect(trackToolCall(touched, "read", null)).toBe(false);
-		expect(touched.size).toBe(0);
-	});
-
-	it("is cumulative and idempotent", () => {
-		const touched = new Set<string>();
-		trackToolCall(touched, "read", { path: "a.ts" });
-		trackToolCall(touched, "write", { path: "b.ts" });
-		trackToolCall(touched, "read", { path: "a.ts" });
-		expect([...touched].sort()).toEqual(["a.ts", "b.ts"]);
+		expect(extractResultPaths("read", {}, undefined)).toEqual([]);
+		expect(extractResultPaths("read", { path: 42 }, undefined)).toEqual([]);
+		expect(extractResultPaths("read", null, undefined)).toEqual([]);
 	});
 });
 
+describe("candidateBases", () => {
+	it("returns the path plus its bare filename", () => {
+		expect(candidateBases("a/b/pyproject.toml")).toEqual([
+			"a/b/pyproject.toml",
+			"pyproject.toml",
+		]);
+	});
+
+	it("returns a single base for bare filenames", () => {
+		expect(candidateBases("pyproject.toml")).toEqual(["pyproject.toml"]);
+	});
+});
+
+describe("matchFile", () => {
+	it("matches bare patterns against nested files via basename", () => {
+		expect(
+			matchFile(["pyproject.toml"], "a/b/pyproject.toml", exactMatch),
+		).toBe(true);
+		expect(matchFile(["pyproject.toml"], "a/b/other.toml", exactMatch)).toBe(
+			false,
+		);
+	});
+
+	it("still matches full relative paths", () => {
+		const matches: PathMatcher = (patterns, file) =>
+			patterns.some((p) => p === "src/**" && file.startsWith("src/"));
+		expect(matchFile(["src/**"], "src/a.ts", matches)).toBe(true);
+	});
+});
 describe("getUnscopedRules", () => {
 	it("returns only rules without paths", () => {
 		expect(getUnscopedRules([unscopedA, unscopedB, scopedRule])).toEqual([
@@ -123,9 +169,10 @@ describe("getActiveScopedRules", () => {
 		]);
 	});
 
-	it("activates a scoped rule from a Write-without-Read touch", () => {
-		const touched = new Set<string>();
-		trackToolCall(touched, "write", { path: "src/fresh.tsx" });
+	it("activates a scoped rule from Write result paths", () => {
+		const touched = new Set(
+			extractResultPaths("write", { path: "src/fresh.tsx" }, undefined),
+		);
 		const matches: PathMatcher = (_patterns, file) => file === "src/fresh.tsx";
 		expect(getActiveScopedRules([scopedRule], touched, matches)).toEqual([
 			scopedRule,
@@ -175,26 +222,26 @@ describe("buildSystemPromptOverride", () => {
 	});
 });
 
-describe("buildScopedMessage", () => {
+describe("buildScopedToolBlock", () => {
 	it("returns undefined when no rules are given", () => {
-		expect(buildScopedMessage([])).toBeUndefined();
+		expect(buildScopedToolBlock([], "src/a.ts")).toBeUndefined();
 		expect(buildScopedMessageContent([])).toBeUndefined();
 	});
 
-	it("injects full content as a visible message", () => {
-		const message = buildScopedMessage([scopedRule]);
-		expect(message?.customType).toBe(RULES_MESSAGE_TYPE);
-		expect(message?.customType).toBe("pi-rules");
-		expect(message?.display).toBe(true);
-		expect(message?.content).toContain("--- frontend/react.md [project] ---");
-		expect(message?.content).toContain("Use hooks.");
+	it("appends full content naming the matched target", () => {
+		const block = buildScopedToolBlock([scopedRule], "src/app.tsx");
+		expect(block).toContain("## Rules (scoped — matched for src/app.tsx)");
+		expect(block).toContain("--- frontend/react.md [project] ---");
+		expect(block).toContain("Use hooks.");
 	});
+
 	it("appends the activating file when reasons are given", () => {
-		const message = buildScopedMessage(
+		const block = buildScopedToolBlock(
 			[scopedRule],
+			"src/app.tsx",
 			new Map([["frontend/react.md", "src/app.tsx"]]),
 		);
-		expect(message?.content).toContain("Activated by `src/app.tsx`");
+		expect(block).toContain("Activated by `src/app.tsx`");
 	});
 
 	it("finds the first touched file matching a scoped rule", () => {
@@ -222,5 +269,22 @@ describe("buildScopedMessage", () => {
 		expect(buildScopedMessageContent([titled])).toBe(
 			"## Rules (scoped — activated by touched files)\n--- t.md [global] ---\n# T\n\nBody text.",
 		);
+	});
+});
+
+describe("relativize", () => {
+	it("strips the cwd prefix from absolute paths", () => {
+		expect(relativize("/repo/src/a.ts", "/repo")).toBe("src/a.ts");
+		expect(relativize("/repo/src/a.ts", "/repo/")).toBe("src/a.ts");
+	});
+
+	it("passes through relative paths and paths outside cwd", () => {
+		expect(relativize("src/a.ts", "/repo")).toBe("src/a.ts");
+		expect(relativize("/other/a.ts", "/repo")).toBe("/other/a.ts");
+		expect(relativize("src/a.ts", "")).toBe("src/a.ts");
+	});
+
+	it("does not strip partial directory names", () => {
+		expect(relativize("/repo-other/a.ts", "/repo")).toBe("/repo-other/a.ts");
 	});
 });

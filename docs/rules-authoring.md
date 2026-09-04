@@ -30,7 +30,7 @@ paths:
 
 # TypeScript conventions
 
-Injected as a visible message naming the activating file once a `src/` or `tests/` TypeScript file is touched.
+Appended to the triggering tool result (naming the matched file and the activating file) the first time a `src/` or `tests/` TypeScript file is read, edited, or written.
 ```
 
 Inline list form also works: `paths: ["src/**/*.ts", "tests/**/*.ts"]`. Omit `paths:` for always-on rules; keep that set minimal — invariants only. Remember scoped rules are compaction-evictable, so anything that must survive compaction belongs in an unscoped rule. The whole `paths:` list per rule is budgeted at 1000 expanded patterns and 4 MiB — on breach the extension warns and falls back to literal matching for that rule.
