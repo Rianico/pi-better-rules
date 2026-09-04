@@ -1,8 +1,8 @@
 {
 	"name": "pi-better-rules",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"private": true,
-	"description": "Pi extension that surfaces global and project rules per prompt (spec .scratch/rules-extension/spec.md \u00a75; loader manifest: package.json \u2018pi.extensions\u2019 -> ./src/index.ts per docs/extensions.md + docs/packages.md).",
+	"description": "Pi extension that surfaces global and project rules per prompt (spec .scratch/rules-extension/spec.md §5; loader manifest: package.json ‘pi.extensions’ -> ./src/index.ts per docs/extensions.md + docs/packages.md).",
 	"keywords": [
 		"pi-package"
 	],
