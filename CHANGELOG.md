@@ -15,7 +15,8 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-- **ci:** provision pnpm via action-setup in release workflow
+- **ci:** run semantic-release from local deps in release workflow
+- **ci:** provision pnpm via action-setup in release workflow (#5)
 - run release workflow on pnpm and node 26
 - point release assets at pnpm-lock
 
