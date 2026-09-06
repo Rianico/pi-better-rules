@@ -225,15 +225,17 @@ export function formatLoadReport(rules: readonly Rule[]): string {
 export function formatRuleList(
 	rules: readonly {
 		readonly rel: string;
+		readonly abs?: string;
 		readonly scope: string;
 		readonly paths?: readonly string[] | undefined;
 	}[],
 ): string[] {
-	return rules.map((rule) =>
-		rule.paths === undefined
-			? `- ${rule.rel} [${rule.scope}] — unscoped (always-on)`
-			: `- ${rule.rel} [${rule.scope}] — scoped (${rule.paths.join(", ")})`,
-	);
+	return rules.map((rule) => {
+		const displayPath = (rule as { abs?: string }).abs ?? rule.rel;
+		return rule.paths === undefined
+			? `- ${displayPath} [${rule.scope}] — unscoped (always-on)`
+			: `- ${displayPath} [${rule.scope}] — scoped (${rule.paths.join(", ")})`;
+	});
 }
 
 /** Expand the first `{a,b}` group recursively (Claude `paths:` semantics). */

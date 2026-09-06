@@ -10,6 +10,7 @@ export type RuleScope = "global" | "project";
 
 export interface LifecycleRule {
 	readonly rel: string;
+	readonly abs?: string; // full path for display (fallback to rel in tests)
 	readonly scope: RuleScope;
 	readonly paths?: readonly string[];
 	readonly summary: string;
@@ -141,9 +142,9 @@ export function getNewScopedRules(
 	return activeScoped.filter((rule) => !injected.has(rule.rel));
 }
 
-/** Render one rule with its original body intact, split by a rel separator. */
+/** Render one rule with its original body intact, split by a full-path separator. */
 function formatRuleSection(rule: LifecycleRule): string {
-	return `--- ${rule.rel} [${rule.scope}] ---\n${rule.text}`;
+	return `--- ${rule.abs ?? rule.rel} [${rule.scope}] ---\n${rule.text}`;
 }
 
 function renderUnscoped(

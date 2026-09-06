@@ -132,6 +132,7 @@ function toLifecycleRules(rules: Rule[]): LifecycleRule[] {
 	return rules.map((rule) => {
 		const base = {
 			rel: rule.rel,
+			abs: rule.abs,
 			scope: rule.scope,
 			summary: rule.summary,
 			text: rule.text,
@@ -185,23 +186,24 @@ function buildRulesStatus(state: EntryState): string {
 	const scoped = state.rules.length - unscoped;
 	const lines = state.rules.map(
 		(rule) =>
-			`- ${rule.rel} [${rule.scope}] — ${rule.paths === undefined ? "unscoped (always-on)" : `scoped (${rule.paths.join(", ")})`}${state.injected.has(rule.rel) ? " · injected" : ""}`,
+			`- ${rule.abs ?? rule.rel} [${rule.scope}] — ${rule.paths === undefined ? "unscoped (always-on)" : `scoped (${rule.paths.join(", ")})`}${state.injected.has(rule.rel) ? " · injected" : ""}`,
 	);
 	return `pi-rules: ${state.rules.length} rule(s) — ${unscoped} unscoped, ${scoped} scoped\n${lines.join("\n")}`;
 }
-/** Render an abs checksum path as `rel [scope]` for change reports. */
+/** Render an abs checksum path as full path `[scope]` for change reports. */
 function describeAbs(
 	absPath: string,
 	globalDir: string,
 	projectDir: string,
 ): string {
-	const relTo = (dir: string, scope: string): string | undefined => {
-		const prefix = dir.endsWith("/") ? dir : `${dir}/`;
-		if (absPath.startsWith(prefix))
-			return `${absPath.slice(prefix.length)} [${scope}]`;
-		return undefined;
-	};
-	return relTo(projectDir, "project") ?? relTo(globalDir, "global") ?? absPath;
+	const isProject = absPath.startsWith(
+		projectDir.endsWith("/") ? projectDir : `${projectDir}/`,
+	);
+	const isGlobal = absPath.startsWith(
+		globalDir.endsWith("/") ? globalDir : `${globalDir}/`,
+	);
+	const scope = isProject ? "project" : isGlobal ? "global" : undefined;
+	return scope === undefined ? absPath : `${absPath} [${scope}]`;
 }
 
 export default function piBetterRules(pi: ExtensionAPI): void {
@@ -225,7 +227,7 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 					cmdCtx.ui.notify(`pi-rules: no rule matching \`${id}\``, "warning");
 				} else {
 					cmdCtx.ui.notify(
-						`--- ${rule.rel} [${rule.scope}] ---\n${rule.text}`,
+						`--- ${rule.abs ?? rule.rel} [${rule.scope}] ---\n${rule.text}`,
 						"info",
 					);
 				}
@@ -330,7 +332,7 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 		for (const rule of fresh) state.injected.add(rule.rel);
 		ctx.ui.notify(
 			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target}, ${patternNote}\n${fresh
-				.map((rule) => `- ${rule.rel}`)
+				.map((rule) => `- ${rule.abs ?? rule.rel}`)
 				.join("\n")}`,
 			"warning",
 		);
