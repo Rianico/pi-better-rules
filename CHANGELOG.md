@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Features
+
+- **rules:** display rule paths as full absolute paths
+
 ## [0.1.0](https://github.com/Rianico/pi-better-rules/compare/v0.0.0...v0.1.0) (2026-09-04)
 
 ### Features

@@ -323,7 +323,7 @@ describe("extension entry", () => {
 		expect(warn?.message).toContain(
 			"matched for src/new.ts, matched pattern: src/**",
 		);
-		expect(warn?.message).toContain("\n- frontend.md");
+		expect(warn?.message).toContain("frontend.md");
 
 		// Inject-once: a second matching result appends nothing.
 		const again = (await toolResult(
@@ -417,10 +417,10 @@ describe("extension entry", () => {
 		expect(info).toHaveLength(1);
 		expect(info[0]?.message).toContain("(full scan on startup)");
 		expect(info[0]?.message).toContain(
-			"- global-unscoped.md [global] — unscoped (always-on)",
+			"global-unscoped.md [global] — unscoped (always-on)",
 		);
 		expect(info[0]?.message).toContain(
-			"- frontend.md [project] — scoped (src/**)",
+			"frontend.md [project] — scoped (src/**)",
 		);
 	});
 
@@ -446,9 +446,9 @@ describe("extension entry", () => {
 		expect(info.some((n) => /checksum changes detected/.test(n.message))).toBe(
 			true,
 		);
-		expect(
-			info.some((n) => n.message.includes("~ frontend.md [project]")),
-		).toBe(true);
+		expect(info.some((n) => n.message.includes("frontend.md [project]"))).toBe(
+			true,
+		);
 	});
 
 	it("session_compact notifies retention with the rule list", async () => {
@@ -468,9 +468,7 @@ describe("extension entry", () => {
 		expect(notifications[0]?.message).toContain(
 			"retained across compaction (threshold)",
 		);
-		expect(notifications[0]?.message).toContain(
-			"- global-unscoped.md [global]",
-		);
+		expect(notifications[0]?.message).toContain("global-unscoped.md [global]");
 	});
 
 	it("tool result blocks state the activating file", async () => {
