@@ -1,8 +1,8 @@
-## [Unreleased]
+## [0.2.0](https://github.com/Rianico/pi-better-rules/compare/v0.1.0...v0.2.0) (2026-09-06)
 
 ### Features
 
-- **rules:** display rule paths as full absolute paths
+* **rules:** display rule paths as full absolute paths ([#7](https://github.com/Rianico/pi-better-rules/issues/7)) ([49e649d](https://github.com/Rianico/pi-better-rules/commit/49e649d21faa38f44c0eb645821348e77a2c116a))
 
 ## [0.1.0](https://github.com/Rianico/pi-better-rules/compare/v0.0.0...v0.1.0) (2026-09-04)
 
