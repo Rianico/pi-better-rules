@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Bug Fixes
+
+- repopulate on reload-unchanged with fresh state
+
 ## [0.2.0](https://github.com/Rianico/pi-better-rules/compare/v0.1.0...v0.2.0) (2026-09-06)
 
 ### Features

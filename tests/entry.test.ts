@@ -210,6 +210,36 @@ describe("extension entry", () => {
 		expect(result?.systemPrompt).toContain("Never leak secrets.");
 	});
 
+	it("repopulates on reload-unchanged when state is fresh (new Extension instance after /reload)", async () => {
+		const { home, project } = await setupBothTrees();
+		// First instance populates cache via startup scan
+		const firstStub = createStub();
+		entry(toExtensionAPI(firstStub));
+		await getHandler(firstStub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		// Fresh instance mimics pi's reload: new closure with empty state, same cwd/checksums
+		vi.stubEnv("HOME", home);
+		const freshStub = createStub();
+		entry(toExtensionAPI(freshStub));
+		const notifications: Notification[] = [];
+		await getHandler(freshStub, "session_start")(
+			{ type: "session_start", reason: "reload" },
+			createCtx(project, notifications),
+		);
+		// Must not report 0 rules — should rescan and repopulate even though checksums are unchanged
+		expect(
+			notifications.some((n) => /0 rule\(s\).*unchanged/.test(n.message)),
+		).toBe(false);
+		const result = (await getHandler(freshStub, "before_agent_start")(
+			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
+			createCtx(project, []),
+		)) as AgentStartResult | undefined;
+		expect(result?.systemPrompt).toContain("Never leak secrets.");
+		expect(result?.systemPrompt).toContain("Shared");
+	});
+
 	it("rescans on reload when a rule file changed", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();

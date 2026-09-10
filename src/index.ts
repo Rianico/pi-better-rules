@@ -252,7 +252,7 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 				hooks,
 				warn,
 			);
-			if (verification.unchanged) {
+			if (verification.unchanged && state.rules.length > 0) {
 				ctx.ui.notify(
 					`pi-rules: ${state.rules.length} rule(s) — unchanged (checksums verified, no rescan)\n${formatRuleList(state.rules).join("\n")}`,
 					"info",
