@@ -1,8 +1,8 @@
-## [Unreleased]
+## [0.2.1](https://github.com/Rianico/pi-better-rules/compare/v0.2.0...v0.2.1) (2026-09-10)
 
 ### Bug Fixes
 
-- repopulate on reload-unchanged with fresh state
+* repopulate on reload-unchanged with fresh state ([7817dac](https://github.com/Rianico/pi-better-rules/commit/7817dacede1e31ecb2af1660f24f255c0dfe8e84))
 
 ## [0.2.0](https://github.com/Rianico/pi-better-rules/compare/v0.1.0...v0.2.0) (2026-09-06)
 
