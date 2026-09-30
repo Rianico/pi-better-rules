@@ -1,5 +1,5 @@
 name: "🐛 Bug report"
-description: Concise, paste-complete repro — see #38 as exemplar
+description: Concise, paste-complete repro — summary, environment, steps, expected vs actual
 title: "[bug] "
 labels: ["bug"]
 body:
@@ -15,77 +15,61 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: One line — what broke + failure mode (e.g. trailingDups silently drops `}` → brace imbalance)
-      placeholder: "Plugin 0.5.0 — trailingDups removes replacement's last line → brace imbalance"
+      description: One line — what broke and how it fails, not what you think the fix is
+      placeholder: "<version> — <what you did> → <what happened instead>"
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
       label: Environment
-      description: plugin/app version, module/file, trigger command
+      description: Version, the module or file involved, and the exact command you ran
       placeholder: |
-        - Version: 0.5.0
-        - Module: lib/hashline/anchor-pipeline.js
-        - Trigger: edit with remove_from/remove_to
+        - Version:
+        - Module:
+        - Command:
       value: |
         - Version:
         - Module:
-        - Trigger:
+        - Command:
     validations:
       required: true
   - type: textarea
     id: repro
     attributes:
       label: Steps to Reproduce
-      description: Minimal complete file + operation map + exact payload (paste-complete, prefer text over screenshots)
+      description: Minimal complete input plus the exact args/payload — paste-complete text beats screenshots
       placeholder: |
-        1. Minimal file content (paste-complete):
-        ```cpp
-        void foo() { }
-        ```
-        2. Operation map / payload:
-        ```json
-        { "edits": [["<from>", "<to>", "<replacement_text>"]], "path": "D:\test.txt" }
-        ```
-        3. Run: `...`
+        1. Minimal input (the smallest one that still fails), pasted verbatim:
+        2. Args / payload, pasted verbatim:
+        3. Run: exact command
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
       label: Expected behavior
-      description: What you expected to happen (paste expected file/diff)
-      placeholder: |
-        ```cpp
-        // 10 lines, brace-balanced
-        ```
+      description: What you expected instead — quote the file, diff, or output
     validations:
       required: true
   - type: textarea
     id: actual
     attributes:
       label: Actual behavior
-      description: What actually happened — quote diff / logs / autoFixes / balance delta
-      placeholder: |
-        ```json
-        {"kind":"trailing","removedLine":"\t}"}
-        ```
-        brace balance -1
-      render: shell
+      description: What actually happened — quote the diff, log, or error verbatim
     validations:
       required: true
   - type: textarea
     id: impact
     attributes:
       label: Impact & Trigger Conditions
-      description: When it fires, frequency, blast radius
+      description: When it fires, how often, and what it blocks
     validations:
       required: false
   - type: textarea
     id: root-cause
     attributes:
       label: Root Cause / Suggested Fixes (optional)
-      description: Hypothesis + numbered alternatives with tradeoff (threshold / fail-closed / symmetric range)
+      description: Hypothesis plus alternatives, each with its tradeoff
     validations:
       required: false

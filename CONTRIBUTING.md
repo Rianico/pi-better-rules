@@ -17,3 +17,14 @@ Pick the template that matches your intent — see `.github/ISSUE_TEMPLATE/` (bl
 Prompt rule: when the model helps file an issue, infer `bug` vs `feat` from intent, ask for any missing `body` field of that form, and render via `gh issue create --template <file>`. View exemplar with `gh issue view 38 --json title,body --repo Rianico/dsh-better-edit`.
 ## Before PR
 `npm run lint && npm run typecheck && npm test` must pass. See `AGENTS.md` for agent rules.
+
+## Pull Requests
+Prefer topic branch → PR → squash merge. Keep one concern per PR; link the issue with `Closes #NN` in the description or commit footer.
+### Description
+PR body is auto-populated from `.github/pull_request_template.md` (GitHub PR template). Keep the four headings — delete `Architecture` when no structural change:
+- **Summary** — 2-3 sentences on *why*, not what line changed. Include `**Impact**: X files (Y +, Z -) · **Risk**: Low | Medium | High` (Low = docs/tests only; Medium = isolated feature/fix; High = cross-module contract, migration, or `BREAKING CHANGE`).
+- **What Changed** — grouped by system/feature, not by file list. Flag migrations / API / payload / config-format changes.
+- **Architecture** — Mermaid `graph LR` / `sequenceDiagram` before → after only for structural seams, layering, or data-flow changes.
+- **Checklist** — derived from change categories; start from the template checklist and add items as needed (e.g., benchmarks for perf, absorption notes for upstream sync).
+CI (`changelog-check.yml`, `verify`) must be green before requesting review.
+
