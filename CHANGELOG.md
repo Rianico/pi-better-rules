@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
 ### Features
 
 * **rules:** render unscoped and scoped rules in exported session HTML (#8)
