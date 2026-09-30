@@ -1,8 +1,12 @@
 // pi-better-rules lifecycle: activation tracking + prompt rendering.
 // Scope-only model (issue 14): no tier. Unscoped rules (paths absent) are
-// always-on full content appended to the system prompt (like pi's appended
-// system prompt). Scoped rules (paths present) are full content injected as
-// visible session messages (display: true), cumulative inject-once.
+// always-on full content carried by the `user-rules` system-prompt section: pi
+// wraps every non-preamble section as `<name>…</name>` and persists the result
+// into the transcript's system message, so unscoped rules travel with the
+// prompt (and with session exports) without ever becoming a terminal message.
+// Scoped rules (paths present) are full content injected into the triggering
+// tool result plus a settle-time custom_message hidden in the terminal
+// (display: false) but still present in session exports.
 // Glob matching lives in scanner.ts; this module takes an injected
 // PathMatcher so scoped activation stays testable in isolation.
 
@@ -142,31 +146,58 @@ export function getNewScopedRules(
 	return activeScoped.filter((rule) => !injected.has(rule.rel));
 }
 
-/** Render one rule with its original body intact, split by a full-path separator. */
-function formatRuleSection(rule: LifecycleRule): string {
-	return `--- ${rule.abs ?? rule.rel} [${rule.scope}] ---\n${rule.text}`;
+/** Escape XML attribute values (paths/summaries stay on one line). */
+export function escapeXmlAttr(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
-function renderUnscoped(
-	unscoped: readonly LifecycleRule[],
-): string | undefined {
-	if (unscoped.length === 0) return undefined;
-	const body = unscoped.map((rule) => formatRuleSection(rule)).join("\n\n");
-	return `## Rules (always-on)\n${body}`;
+/** Gating scope for the `scope` attribute: unscoped (always-on) vs scoped. */
+export function ruleScope(rule: LifecycleRule): "unscoped" | "scoped" {
+	return rule.paths === undefined ? "unscoped" : "scoped";
 }
 
-/**
- * Per-prompt systemPrompt override carrying unscoped full content (like pi's
- * appended system prompt); undefined when no unscoped rules exist.
- */
-export function buildSystemPromptOverride(
-	base: string,
-	unscoped: readonly LifecycleRule[],
+/** Render one rule as a `<rule>` element with its original body intact. */
+export function formatRuleXml(
+	rule: LifecycleRule,
+	activatedBy?: ReadonlyMap<string, string>,
+): string {
+	const cause = activatedBy?.get(rule.rel);
+	const causeAttr =
+		cause === undefined ? "" : ` activated-by="${escapeXmlAttr(cause)}"`;
+	return `<rule path="${escapeXmlAttr(rule.abs ?? rule.rel)}" scope="${ruleScope(rule)}" summary="${escapeXmlAttr(rule.summary)}"${causeAttr}>${rule.text}</rule>`;
+}
+
+/** Render rules as a `<user-rules>` block. Fenced by callers whose render path
+ * is markdown; raw when the block feeds the model directly. */
+export function buildRulesXml(
+	rules: readonly LifecycleRule[],
+	activatedBy?: ReadonlyMap<string, string>,
+): string {
+	return `<user-rules>\n${rules.map((rule) => formatRuleXml(rule, activatedBy)).join("\n")}\n</user-rules>`;
+}
+
+/** System-prompt section name. pi wraps each non-preamble section in a tag of
+ * the same name, so this renders as `<user-rules>…</user-rules>` — distinct from
+ * pi's own `<rules>` section for built-in tool guidelines. */
+export const RULES_SECTION_NAME = "user-rules";
+
+/** Body for the `user-rules` system-prompt section: the `<rule>` children only,
+ * because pi adds the wrapper. Undefined when there is nothing to carry. */
+export function buildRulesSection(
+	rules: readonly LifecycleRule[],
 ): string | undefined {
-	const section = renderUnscoped(unscoped);
-	if (section === undefined) return undefined;
-	if (base === "") return section;
-	return `${base}\n\n${section}`;
+	if (rules.length === 0) return undefined;
+	return rules.map((rule) => formatRuleXml(rule)).join("\n");
+}
+
+/** Wrap an XML block in a ```xml fence so export renderers (markdown)
+ * show the tags literally instead of swallowing them as DOM elements. */
+export function fenceXml(block: string): string {
+	return `\`\`\`xml\n${block}\n\`\`\``;
 }
 
 /** First touched file activating a scoped rule, if any (why-it-loaded). */
@@ -178,40 +209,14 @@ export function findActivatingFile(
 	return findActivation(rule, touched, matches)?.file;
 }
 
-/** One scoped section with its activating file (why-it-loaded). */
-function formatScopedSection(
-	rule: LifecycleRule,
-	activatedBy?: ReadonlyMap<string, string>,
-): string {
-	const section = formatRuleSection(rule);
-	const cause = activatedBy?.get(rule.rel);
-	return cause === undefined
-		? section
-		: `${section}\n_Activated by \`${cause}\`._`;
-}
-
-/** Full-content body for newly activated scoped rules (next-turn message path). */
+/** Fenced full-content body for newly activated scoped rules. Scoped rules
+ * arrive mid-conversation as an ordinary message, so the content is fenced:
+ * the terminal and the export both render markdown, which would otherwise
+ * swallow raw tags as invisible DOM. */
 export function buildScopedMessageContent(
 	rules: readonly LifecycleRule[],
 	activatedBy?: ReadonlyMap<string, string>,
 ): string | undefined {
 	if (rules.length === 0) return undefined;
-	const body = rules
-		.map((rule) => formatScopedSection(rule, activatedBy))
-		.join("\n\n");
-	return `## Rules (scoped — activated by touched files)\n${body}`;
-}
-
-/** Same-turn tool-result block appended to the triggering result's content
- * (pi-rules dynamic style): visible immediately, persisted in the transcript. */
-export function buildScopedToolBlock(
-	rules: readonly LifecycleRule[],
-	target: string,
-	activatedBy?: ReadonlyMap<string, string>,
-): string | undefined {
-	if (rules.length === 0) return undefined;
-	const body = rules
-		.map((rule) => formatScopedSection(rule, activatedBy))
-		.join("\n\n");
-	return `\n\n## Rules (scoped — matched for ${target})\n\n${body}`;
+	return fenceXml(buildRulesXml(rules, activatedBy));
 }

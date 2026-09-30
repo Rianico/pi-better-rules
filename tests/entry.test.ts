@@ -17,14 +17,26 @@ interface StubEntry {
 	readonly data: unknown;
 }
 
+interface StubMessage {
+	readonly customType: string;
+	readonly content: string;
+	readonly display: boolean;
+	readonly options?: {
+		readonly deliverAs?: string;
+		readonly triggerTurn?: boolean;
+	};
+}
+
 interface StubExtensionAPI {
 	readonly events: string[];
 	readonly handlers: Map<string, TestHandler[]>;
 	readonly commands: StubCommand[];
 	readonly entries: StubEntry[];
+	readonly messages: StubMessage[];
 	on(event: string, handler: TestHandler): void;
 	registerCommand(name: string, options: { handler: TestHandler }): void;
 	appendEntry(customType: string, data?: unknown): void;
+	sendMessage(message: StubMessage, options?: StubMessage["options"]): void;
 }
 
 function createStub(): StubExtensionAPI {
@@ -32,11 +44,13 @@ function createStub(): StubExtensionAPI {
 	const handlers = new Map<string, TestHandler[]>();
 	const commands: StubCommand[] = [];
 	const entries: StubEntry[] = [];
+	const messages: StubMessage[] = [];
 	return {
 		events,
 		handlers,
 		commands,
 		entries,
+		messages,
 		on(event: string, handler: TestHandler): void {
 			events.push(event);
 			const list = handlers.get(event) ?? [];
@@ -48,6 +62,12 @@ function createStub(): StubExtensionAPI {
 		},
 		appendEntry(customType: string, data?: unknown): void {
 			entries.push({ customType, data });
+		},
+		sendMessage(message: StubMessage, options?: StubMessage["options"]): void {
+			messages.push({
+				...message,
+				...(options === undefined ? {} : { options }),
+			});
 		},
 	};
 }
@@ -115,8 +135,28 @@ async function makeTree(files: Record<string, string>): Promise<string> {
 const GLOBAL_UNSCOPED = `# Global invariants\n\nNever leak secrets.\n`;
 const PROJECT_SCOPED = `---\npaths:\n  - "src/**"\n---\n# Frontend rules\n\nUse hooks.\n`;
 
-interface AgentStartResult {
-	systemPrompt?: string;
+interface SystemPromptOptions {
+	sections: Record<string, string>;
+}
+
+interface AgentStartEvent {
+	type: "before_agent_start";
+	prompt: string;
+	systemPrompt: string;
+	systemPromptOptions: SystemPromptOptions;
+}
+
+const RULES_SECTION = "user-rules";
+
+/** Event for before_agent_start; `systemPromptOptions.sections` is the mutable
+ * map pi wraps into `<name>…</name>` prompt sections. */
+function startEvent(sections: Record<string, string> = {}): AgentStartEvent {
+	return {
+		type: "before_agent_start",
+		prompt: "hi",
+		systemPrompt: "base",
+		systemPromptOptions: { sections },
+	};
 }
 
 interface ToolResult {
@@ -203,11 +243,11 @@ describe("extension entry", () => {
 			),
 		).toBe(true);
 		const beforeAgentStart = getHandler(stub, "before_agent_start");
-		const result = (await beforeAgentStart(
-			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
-			createCtx(project, []),
-		)) as AgentStartResult | undefined;
-		expect(result?.systemPrompt).toContain("Never leak secrets.");
+		const event = startEvent();
+		await beforeAgentStart(event, createCtx(project, []));
+		expect(event.systemPromptOptions.sections[RULES_SECTION]).toContain(
+			"Never leak secrets.",
+		);
 	});
 
 	it("repopulates on reload-unchanged when state is fresh (new Extension instance after /reload)", async () => {
@@ -232,12 +272,14 @@ describe("extension entry", () => {
 		expect(
 			notifications.some((n) => /0 rule\(s\).*unchanged/.test(n.message)),
 		).toBe(false);
-		const result = (await getHandler(freshStub, "before_agent_start")(
-			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
+		const reloadEvent = startEvent();
+		await getHandler(freshStub, "before_agent_start")(
+			reloadEvent,
 			createCtx(project, []),
-		)) as AgentStartResult | undefined;
-		expect(result?.systemPrompt).toContain("Never leak secrets.");
-		expect(result?.systemPrompt).toContain("Shared");
+		);
+		const section = reloadEvent.systemPromptOptions.sections[RULES_SECTION];
+		expect(section).toContain("Never leak secrets.");
+		expect(section).toContain("Shared");
 	});
 
 	it("rescans on reload when a rule file changed", async () => {
@@ -277,10 +319,13 @@ describe("extension entry", () => {
 			},
 			promptCtx,
 		)) as ToolResult | undefined;
-		expect(result?.content).toHaveLength(2);
-		expect(result?.content?.[0]).toEqual({ type: "text", text: "file body" });
-		expect(result?.content?.[1]?.text).toContain("Use hooks v2");
-		expect(result?.content?.[1]?.text).toContain("matched for src/app.ts");
+		expect(result).toBeUndefined();
+		expect(stub.messages).toHaveLength(1);
+		expect(stub.messages[0]?.customType).toBe("pi-rules.activated");
+		expect(stub.messages[0]?.display).toBe(true);
+		expect(stub.messages[0]?.options?.deliverAs).toBe("steer");
+		expect(stub.messages[0]?.content).toContain("Use hooks v2");
+		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
 	});
 
 	it("rebuilds a corrupt checksum cache with a warning on reload", async () => {
@@ -310,7 +355,7 @@ describe("extension entry", () => {
 		).toBe(true);
 	});
 
-	it("tool_result appends scoped blocks same-turn and injects once", async () => {
+	it("tool_result sends scoped rules as an ordinary message, once", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -343,9 +388,11 @@ describe("extension entry", () => {
 			},
 			ctx,
 		)) as ToolResult | undefined;
-		expect(write?.content).toHaveLength(2);
-		expect(write?.content?.[1]?.text).toContain("frontend.md");
-		expect(write?.content?.[1]?.text).toContain("matched for src/new.ts");
+		expect(write).toBeUndefined();
+		expect(stub.messages).toHaveLength(1);
+		expect(stub.messages[0]?.display).toBe(true);
+		expect(stub.messages[0]?.content).toContain("frontend.md");
+		expect(stub.messages[0]?.content).toContain('activated-by="src/new.ts"');
 		const warn = notifications.find((n) =>
 			n.message.includes("+1 scoped rule(s)"),
 		);
@@ -355,7 +402,7 @@ describe("extension entry", () => {
 		);
 		expect(warn?.message).toContain("frontend.md");
 
-		// Inject-once: a second matching result appends nothing.
+		// Inject-once: a second matching result sends nothing.
 		const again = (await toolResult(
 			{
 				type: "tool_result",
@@ -367,8 +414,9 @@ describe("extension entry", () => {
 			ctx,
 		)) as ToolResult | undefined;
 		expect(again).toBeUndefined();
+		expect(stub.messages).toHaveLength(1);
 
-		// Error results never inject.
+		// Error results never send a message.
 		const failed = (await toolResult(
 			{
 				type: "tool_result",
@@ -393,14 +441,12 @@ describe("extension entry", () => {
 			createCtx(project, []),
 		);
 
-		const result = await getHandler(stub, "before_agent_start")(
-			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
-			createCtx(project, []),
-		);
-		expect(result).toBeUndefined();
+		const event = startEvent();
+		await getHandler(stub, "before_agent_start")(event, createCtx(project, []));
+		expect(event.systemPromptOptions.sections[RULES_SECTION]).toBeUndefined();
 	});
 
-	it("before_agent_start carries only unscoped content; scoped rules ride tool results", async () => {
+	it("before_agent_start carries only unscoped content; scoped rules ride messages", async () => {
 		const home = await makeTree({});
 		const project = await makeTree({
 			".pi/rules/scoped-only.md": PROJECT_SCOPED,
@@ -413,13 +459,10 @@ describe("extension entry", () => {
 			createCtx(project, []),
 		);
 
-		// No unscoped rules: no system prompt override, ever.
-		const idle = (await getHandler(stub, "before_agent_start")(
-			{ type: "before_agent_start", prompt: "hi", systemPrompt: "base" },
-			createCtx(project, []),
-		)) as AgentStartResult | undefined;
-		expect(idle).toBeUndefined();
-
+		// No unscoped rules: no user-rules section, ever.
+		const idle = startEvent();
+		await getHandler(stub, "before_agent_start")(idle, createCtx(project, []));
+		expect(idle.systemPromptOptions.sections[RULES_SECTION]).toBeUndefined();
 		const ctx = createCtx(project, []);
 		const active = (await getHandler(stub, "tool_result")(
 			{
@@ -431,8 +474,8 @@ describe("extension entry", () => {
 			},
 			ctx,
 		)) as ToolResult | undefined;
-		expect(active?.content).toHaveLength(2);
-		expect(active?.content?.[1]?.text).toContain("Use hooks.");
+		expect(active).toBeUndefined();
+		expect(stub.messages[0]?.content).toContain("Use hooks.");
 	});
 	it("startup notice lists what loaded and why", async () => {
 		const { project } = await setupBothTrees();
@@ -501,7 +544,7 @@ describe("extension entry", () => {
 		expect(notifications[0]?.message).toContain("global-unscoped.md [global]");
 	});
 
-	it("tool result blocks state the activating file", async () => {
+	it("activation messages state the activating file", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -510,7 +553,7 @@ describe("extension entry", () => {
 			createCtx(project, []),
 		);
 		const ctx = createCtx(project, []);
-		const result = (await getHandler(stub, "tool_result")(
+		await getHandler(stub, "tool_result")(
 			{
 				type: "tool_result",
 				toolName: "read",
@@ -519,8 +562,8 @@ describe("extension entry", () => {
 				isError: false,
 			},
 			ctx,
-		)) as ToolResult | undefined;
-		expect(result?.content?.[1]?.text).toContain("Activated by `src/app.ts`");
+		);
+		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
 	});
 	it("absolute tool paths under cwd activate scoped rules", async () => {
 		const { project } = await setupBothTrees();
@@ -531,7 +574,7 @@ describe("extension entry", () => {
 			createCtx(project, []),
 		);
 		const ctx = createCtx(project, []);
-		const result = (await getHandler(stub, "tool_result")(
+		await getHandler(stub, "tool_result")(
 			{
 				type: "tool_result",
 				toolName: "read",
@@ -540,9 +583,9 @@ describe("extension entry", () => {
 				isError: false,
 			},
 			ctx,
-		)) as ToolResult | undefined;
-		expect(result?.content?.[1]?.text).toContain("frontend.md");
-		expect(result?.content?.[1]?.text).toContain("Activated by `src/app.ts`");
+		);
+		expect(stub.messages[0]?.content).toContain("frontend.md");
+		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
 	});
 
 	it("bare patterns match nested files via basename", async () => {
@@ -557,7 +600,7 @@ describe("extension entry", () => {
 			{ type: "session_start", reason: "startup" },
 			createCtx(project, []),
 		);
-		const result = (await getHandler(stub, "tool_result")(
+		await getHandler(stub, "tool_result")(
 			{
 				type: "tool_result",
 				toolName: "read",
@@ -566,9 +609,9 @@ describe("extension entry", () => {
 				isError: false,
 			},
 			createCtx(project, []),
-		)) as ToolResult | undefined;
-		expect(result?.content?.[1]?.text).toContain("python.md");
-		expect(result?.content?.[1]?.text).toContain("Use uv.");
+		);
+		expect(stub.messages[0]?.content).toContain("python.md");
+		expect(stub.messages[0]?.content).toContain("Use uv.");
 	});
 
 	it("session_start persists a scan entry to the timeline", async () => {
@@ -612,5 +655,103 @@ describe("extension entry", () => {
 				(n) => n.type === "warning" && /no rule matching/.test(n.message),
 			),
 		).toBe(true);
+	});
+
+	it("before_agent_start publishes unscoped rules as the user-rules prompt section", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		const beforeAgentStart = getHandler(stub, "before_agent_start");
+		const ctx = createCtx(project, []);
+		const event = startEvent();
+		await beforeAgentStart(event, ctx);
+		const section = event.systemPromptOptions.sections[RULES_SECTION];
+		expect(section).toContain('scope="unscoped"');
+		expect(section).toContain("Never leak secrets.");
+		expect(section).not.toContain("frontend.md");
+		// pi adds the <user-rules> wrapper; the body must not nest it.
+		expect(section).not.toContain("<user-rules>");
+		expect(await beforeAgentStart(event, ctx)).toBeUndefined();
+	});
+
+	it("before_agent_start refreshes the section after the unscoped set changes", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		const start = getHandler(stub, "session_start");
+		await start(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		const beforeAgentStart = getHandler(stub, "before_agent_start");
+		const ctx = createCtx(project, []);
+		const before = startEvent();
+		await beforeAgentStart(before, ctx);
+		await writeFile(
+			join(project, ".pi", "rules", "extra.md"),
+			"# Extra\n\nExtra body.\n",
+		);
+		await start(
+			{ type: "session_start", reason: "reload" },
+			createCtx(project, []),
+		);
+		const after = startEvent();
+		await beforeAgentStart(after, ctx);
+		expect(after.systemPromptOptions.sections[RULES_SECTION]).toContain(
+			"Extra body.",
+		);
+		expect(before.systemPromptOptions.sections[RULES_SECTION]).not.toContain(
+			"Extra body.",
+		);
+	});
+
+	it("before_agent_start drops a stale section when only scoped rules remain", async () => {
+		const home = await makeTree({});
+		const project = await makeTree({
+			".pi/rules/scoped-only.md": PROJECT_SCOPED,
+		});
+		vi.stubEnv("HOME", home);
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		const event = startEvent({ [RULES_SECTION]: "stale" });
+		await getHandler(stub, "before_agent_start")(event, createCtx(project, []));
+		expect(event.systemPromptOptions.sections[RULES_SECTION]).toBeUndefined();
+	});
+
+	it("activation message carries fenced scoped bodies and hides nothing", async () => {
+		const { project } = await setupBothTrees();
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, []),
+		);
+		expect(stub.messages).toHaveLength(0);
+		await getHandler(stub, "tool_result")(
+			{
+				type: "tool_result",
+				toolName: "read",
+				input: { path: "src/app.ts" },
+				content: [{ type: "text", text: "body" }],
+				isError: false,
+			},
+			createCtx(project, []),
+		);
+		expect(stub.messages).toHaveLength(1);
+		expect(stub.messages[0]?.customType).toBe("pi-rules.activated");
+		// An ordinary message: visible in the terminal and in session exports.
+		expect(stub.messages[0]?.display).toBe(true);
+		expect(stub.messages[0]?.options?.triggerTurn).toBe(false);
+		expect(stub.messages[0]?.content).toContain("```xml");
+		expect(stub.messages[0]?.content).toContain("Use hooks.");
+		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
 	});
 });

@@ -1,19 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { LifecycleRule, PathMatcher } from "../src/lifecycle.js";
 import {
+	buildRulesSection,
 	buildScopedMessageContent,
-	buildScopedToolBlock,
-	buildSystemPromptOverride,
 	candidateBases,
+	escapeXmlAttr,
 	extractResultPaths,
 	findActivatingFile,
 	findActivation,
 	findMatchingPattern,
+	formatRuleXml,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
 	matchFile,
+	RULES_SECTION_NAME,
 	relativize,
+	ruleScope,
 } from "../src/lifecycle.js";
 
 const unscopedA: LifecycleRule = {
@@ -246,52 +249,54 @@ describe("getNewScopedRules", () => {
 	});
 });
 
-describe("buildSystemPromptOverride", () => {
+describe("buildRulesSection", () => {
 	it("returns undefined when no unscoped rules exist", () => {
-		expect(buildSystemPromptOverride("base", [])).toBeUndefined();
+		expect(buildRulesSection([])).toBeUndefined();
 	});
 
-	it("renders unscoped full content like an appended system prompt", () => {
-		expect(buildSystemPromptOverride("base prompt", [unscopedA])).toBe(
-			"base prompt\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
+	it("renders the <rule> children pi wraps in the user-rules section", () => {
+		expect(buildRulesSection([unscopedA])).toBe(
+			'<rule path="a.md" scope="unscoped" summary="A">Never leak secrets.</rule>',
 		);
 	});
 
-	it("renders multiple unscoped rules", () => {
-		expect(buildSystemPromptOverride("base", [unscopedA, unscopedB])).toBe(
-			"base\n\n## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.\n\n--- b.md [global] ---\nGeneral stuff full text.",
+	it("renders multiple unscoped rules one per line", () => {
+		expect(buildRulesSection([unscopedA, unscopedB])).toBe(
+			'<rule path="a.md" scope="unscoped" summary="A">Never leak secrets.</rule>\n<rule path="b.md" scope="unscoped" summary="B">General stuff full text.</rule>',
 		);
 	});
 
-	it("returns the section alone when base is empty", () => {
-		expect(buildSystemPromptOverride("", [unscopedA])).toBe(
-			"## Rules (always-on)\n--- a.md [project] ---\nNever leak secrets.",
-		);
+	it("names a section tag pi accepts and keeps it distinct from <rules>", () => {
+		expect(RULES_SECTION_NAME).toBe("user-rules");
+		expect(RULES_SECTION_NAME).toMatch(/^[a-z][a-z0-9_-]*$/);
+		expect(RULES_SECTION_NAME).not.toBe("preamble");
+		expect(RULES_SECTION_NAME).not.toBe("rules");
 	});
 });
 
-describe("buildScopedToolBlock", () => {
+describe("buildScopedMessageContent", () => {
 	it("returns undefined when no rules are given", () => {
-		expect(buildScopedToolBlock([], "src/a.ts")).toBeUndefined();
 		expect(buildScopedMessageContent([])).toBeUndefined();
 	});
 
-	it("appends full content naming the matched target", () => {
-		const block = buildScopedToolBlock([scopedRule], "src/app.tsx");
-		expect(block).toContain("## Rules (scoped — matched for src/app.tsx)");
-		expect(block).toContain("--- frontend/react.md [project] ---");
-		expect(block).toContain("Use hooks.");
+	it("fences scoped XML bodies for markdown-rendered messages", () => {
+		const content = buildScopedMessageContent([scopedRule]);
+		expect(content).toContain("```xml");
+		expect(content).toContain(
+			'<rule path="frontend/react.md" scope="scoped" summary="React">Use hooks.</rule>',
+		);
 	});
 
-	it("appends the activating file when reasons are given", () => {
-		const block = buildScopedToolBlock(
+	it("renders the activating file as an activated-by attribute", () => {
+		const content = buildScopedMessageContent(
 			[scopedRule],
-			"src/app.tsx",
 			new Map([["frontend/react.md", "src/app.tsx"]]),
 		);
-		expect(block).toContain("Activated by `src/app.tsx`");
+		expect(content).toContain('activated-by="src/app.tsx"');
 	});
+});
 
+describe("scoped activation helpers", () => {
 	it("finds the first touched file matching a scoped rule", () => {
 		expect(
 			findActivatingFile(
@@ -304,19 +309,37 @@ describe("buildScopedToolBlock", () => {
 			findActivatingFile(scopedRule, new Set(["README.md"]), exactMatch),
 		).toBeUndefined();
 	});
-	it("splits rules with rel separators and preserves original bodies", () => {
+	it("preserves original bodies inside raw XML rule elements", () => {
 		const titled: LifecycleRule = {
 			rel: "t.md",
 			scope: "global",
 			summary: "T",
 			text: "# T\n\nBody text.",
 		};
-		expect(buildSystemPromptOverride("base", [titled])).toBe(
-			"base\n\n## Rules (always-on)\n--- t.md [global] ---\n# T\n\nBody text.",
+		expect(buildRulesSection([titled])).toBe(
+			'<rule path="t.md" scope="unscoped" summary="T"># T\n\nBody text.</rule>',
 		);
 		expect(buildScopedMessageContent([titled])).toBe(
-			"## Rules (scoped — activated by touched files)\n--- t.md [global] ---\n# T\n\nBody text.",
+			'```xml\n<user-rules>\n<rule path="t.md" scope="unscoped" summary="T"># T\n\nBody text.</rule>\n</user-rules>\n```',
 		);
+	});
+});
+
+describe("rulesXml", () => {
+	it("gates scope from paths presence", () => {
+		expect(ruleScope(unscopedA)).toBe("unscoped");
+		expect(ruleScope(scopedRule)).toBe("scoped");
+	});
+
+	it("escapes attribute special chars", () => {
+		expect(escapeXmlAttr('a&<>"b')).toBe("a&amp;&lt;&gt;&quot;b");
+	});
+
+	it("renders activated-by only when mapped", () => {
+		expect(formatRuleXml(scopedRule)).not.toContain("activated-by");
+		expect(
+			formatRuleXml(scopedRule, new Map([["frontend/react.md", "src/a.ts"]])),
+		).toContain('activated-by="src/a.ts"');
 	});
 });
 

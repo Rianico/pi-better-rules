@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Features
+
+- **rules:** render unscoped and scoped rules in exported session HTML
+
 ## [0.2.1](https://github.com/Rianico/pi-better-rules/compare/v0.2.0...v0.2.1) (2026-09-10)
 
 ### Bug Fixes
