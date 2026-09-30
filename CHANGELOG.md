@@ -1,8 +1,12 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
 ## [Unreleased]
 
 ### Features
 
-- **rules:** render unscoped and scoped rules in exported session HTML
+* **rules:** render unscoped and scoped rules in exported session HTML (#8)
 
 ## [0.2.1](https://github.com/Rianico/pi-better-rules/compare/v0.2.0...v0.2.1) (2026-09-10)
 
@@ -45,7 +49,3 @@
 * resolve entry, packaging, and guide tickets ([aefaad6](https://github.com/Rianico/pi-better-rules/commit/aefaad6dfac945c28ba97be87cfb5dcf8d8d1105))
 * resolve implementation tickets, add changelog entry ([c1956ea](https://github.com/Rianico/pi-better-rules/commit/c1956ea49d4ac0cff9af4014d4572fe561776511))
 * resolve prototype check, add implementation tickets ([91304d2](https://github.com/Rianico/pi-better-rules/commit/91304d2b32008abb17c439bd1517b3f3c934b74c))
-
-# Changelog
-
-All notable changes to this project will be documented in this file.

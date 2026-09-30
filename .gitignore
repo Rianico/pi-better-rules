@@ -1,5 +1,7 @@
-.lsz/
 .pi/
 coverage/
 node_modules/
 dist/
+.lsz/*
+!.lsz/config.yaml
+__pycache__/
