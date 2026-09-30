@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "biome check src tests",
-    "build": "tsc"
+    "build": "tsc",
+    "check:pi-dist": "node scripts/check-pi-dist-contract.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.0",

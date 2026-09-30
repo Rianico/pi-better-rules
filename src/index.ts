@@ -1,7 +1,7 @@
 // pi-better-rules — pi extension entry (spec §5, §6).
 //
 // Wires src/scanner.ts (discovery + matching), src/cache.ts (checksum
-// persistence), and src/lifecycle.ts (activation + rendering) into the four
+// persistence), and src/lifecycle.ts (activation + rendering) into the five
 // §6 handlers. No compaction work: the in-memory cache survives compaction
 // untouched; the session_compact handler only notifies retention.
 // Handler shapes follow the installed pi docs/extensions.md and
@@ -10,9 +10,12 @@
 // reference shapes so this package needs no runtime dependency on pi.
 //
 // Scope-only model (issue 14): no tier. Unscoped rules (paths absent) are
-// always-on full content appended to the system prompt (like pi's appended
-// system prompt). Scoped rules (paths present) are full content injected as
-// visible session messages (display: true), cumulative inject-once.
+// always-on full content carried by the `user-rules` system-prompt section:
+// part of the structured prompt, rendered verbatim in the exported session
+// HTML's System Prompt block, never shown as a terminal message. Scoped rules
+// (paths present) arrive mid-conversation as an ordinary visible message
+// (`display: true`) the moment a touched path matches, so they read as a
+// normal turn event in the terminal and in session exports.
 //
 // Load visibility (issue 15): every loading trigger notifies what loaded and
 // why — full scan with rule list on startup/new/resume/fork, checksum
@@ -24,13 +27,14 @@ import type { CacheHooks, FileStat } from "./cache.js";
 import { projectCachePath, refreshCache, verifyChecksums } from "./cache.js";
 import type { LifecycleRule, PathMatcher } from "./lifecycle.js";
 import {
-	buildScopedToolBlock,
-	buildSystemPromptOverride,
+	buildRulesSection,
+	buildScopedMessageContent,
 	extractResultPaths,
 	findActivation,
 	getActiveScopedRules,
 	getNewScopedRules,
 	getUnscopedRules,
+	RULES_SECTION_NAME,
 } from "./lifecycle.js";
 import type { Rule, Warn } from "./scanner.js";
 import {
@@ -76,10 +80,18 @@ export interface ExtensionCommandOptions {
 		ctx: ExtensionCommandContext,
 	) => Promise<void> | void;
 }
+/** Mutable prompt sections. pi wraps each non-preamble section as
+ * `<name>…</name>` and persists them into the transcript's system message, so
+ * a section is both model-facing and present in session exports. */
+export interface SystemPromptOptions {
+	sections: Record<string, string>;
+}
+
 export interface BeforeAgentStartEvent {
 	readonly type: "before_agent_start";
 	readonly prompt: string;
 	readonly systemPrompt: string;
+	readonly systemPromptOptions: SystemPromptOptions;
 }
 
 export interface SessionCompactEvent {
@@ -107,7 +119,10 @@ export interface ExtensionAPI {
 	): void;
 	on(
 		event: "before_agent_start",
-		handler: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => unknown,
+		handler: (
+			event: BeforeAgentStartEvent,
+			ctx: ExtensionContext,
+		) => void | Promise<void>,
 	): void;
 	on(
 		event: "session_compact",
@@ -115,6 +130,21 @@ export interface ExtensionAPI {
 	): void;
 	registerCommand(name: string, options: ExtensionCommandOptions): void;
 	appendEntry<T = unknown>(customType: string, data?: T): void;
+	/** Append a custom message to the session. `display: true` renders it as an
+	 * ordinary message in the terminal and in session exports. */
+	sendMessage(
+		message: CustomMessageDraft,
+		options?: {
+			readonly triggerTurn?: boolean;
+			readonly deliverAs?: "steer" | "followUp" | "nextTurn";
+		},
+	): void;
+}
+
+interface CustomMessageDraft {
+	readonly customType: string;
+	readonly content: string;
+	readonly display: boolean;
 }
 
 interface EntryState {
@@ -327,8 +357,8 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 			patterns.size === 1
 				? `matched pattern: ${[...patterns][0] ?? ""}`
 				: `matched patterns: ${[...patterns].join(", ")}`;
-		const block = buildScopedToolBlock(fresh, target, activatedBy);
-		if (block === undefined) return undefined;
+		const content = buildScopedMessageContent(fresh, activatedBy);
+		if (content === undefined) return undefined;
 		for (const rule of fresh) state.injected.add(rule.rel);
 		ctx.ui.notify(
 			`pi-rules: +${fresh.length} scoped rule(s) matched for ${target}, ${patternNote}\n${fresh
@@ -336,15 +366,19 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 				.join("\n")}`,
 			"warning",
 		);
-		return { content: [...event.content, { type: "text", text: block }] };
+		pi.sendMessage(
+			{ customType: "pi-rules.activated", content, display: true },
+			{ deliverAs: "steer", triggerTurn: false },
+		);
+		return undefined;
 	});
 	pi.on("before_agent_start", (event) => {
-		const override = buildSystemPromptOverride(
-			event.systemPrompt,
-			getUnscopedRules(state.rules),
-		);
-		if (override === undefined) return undefined;
-		return { systemPrompt: override };
+		const body = buildRulesSection(getUnscopedRules(state.rules));
+		if (body === undefined) {
+			delete event.systemPromptOptions.sections[RULES_SECTION_NAME];
+			return;
+		}
+		event.systemPromptOptions.sections[RULES_SECTION_NAME] = body;
 	});
 
 	pi.on("session_compact", (event, ctx) => {
