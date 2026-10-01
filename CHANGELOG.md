@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
-* **rules:** hide scoped activation bodies in the TUI, warn only
+* **rules:** hide scoped activation bodies in the TUI, warn only (#11)
 
 ## [0.3.0] - 2026-09-30
 
