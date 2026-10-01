@@ -12,10 +12,11 @@
 // Scope-only model (issue 14): no tier. Unscoped rules (paths absent) are
 // always-on full content carried by the `user-rules` system-prompt section:
 // part of the structured prompt, rendered verbatim in the exported session
-// HTML's System Prompt block, never shown as a terminal message. Scoped rules
-// (paths present) arrive mid-conversation as an ordinary visible message
-// (`display: true`) the moment a touched path matches, so they read as a
-// normal turn event in the terminal and in session exports.
+// (paths present) arrive mid-conversation as a hidden message
+// (`display: false`) the moment a touched path matches: the model still
+// reads the full body in the same run, but the terminal shows only the
+// `pi-rules: +N scoped rule(s)` warning — the full XML stays out of the
+// TUI (reachable in exports behind the hidden-messages toggle).
 //
 // Load visibility (issue 15): every loading trigger notifies what loaded and
 // why — full scan with rule list on startup/new/resume/fork, checksum
@@ -367,7 +368,7 @@ export default function piBetterRules(pi: ExtensionAPI): void {
 			"warning",
 		);
 		pi.sendMessage(
-			{ customType: "pi-rules.activated", content, display: true },
+			{ customType: "pi-rules.activated", content, display: false },
 			{ deliverAs: "steer", triggerTurn: false },
 		);
 		return undefined;

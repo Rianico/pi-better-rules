@@ -210,9 +210,10 @@ export function findActivatingFile(
 }
 
 /** Fenced full-content body for newly activated scoped rules. Scoped rules
- * arrive mid-conversation as an ordinary message, so the content is fenced:
- * the terminal and the export both render markdown, which would otherwise
- * swallow raw tags as invisible DOM. */
+ * arrive mid-conversation as a hidden (`display: false`) message — the model
+ * reads the full body in the same run while the terminal shows only the
+ * warning notification. The content stays fenced: exports render markdown,
+ * which would otherwise swallow raw tags as invisible DOM. */
 export function buildScopedMessageContent(
 	rules: readonly LifecycleRule[],
 	activatedBy?: ReadonlyMap<string, string>,

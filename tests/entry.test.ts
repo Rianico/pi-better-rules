@@ -322,7 +322,7 @@ describe("extension entry", () => {
 		expect(result).toBeUndefined();
 		expect(stub.messages).toHaveLength(1);
 		expect(stub.messages[0]?.customType).toBe("pi-rules.activated");
-		expect(stub.messages[0]?.display).toBe(true);
+		expect(stub.messages[0]?.display).toBe(false);
 		expect(stub.messages[0]?.options?.deliverAs).toBe("steer");
 		expect(stub.messages[0]?.content).toContain("Use hooks v2");
 		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
@@ -390,7 +390,7 @@ describe("extension entry", () => {
 		)) as ToolResult | undefined;
 		expect(write).toBeUndefined();
 		expect(stub.messages).toHaveLength(1);
-		expect(stub.messages[0]?.display).toBe(true);
+		expect(stub.messages[0]?.display).toBe(false);
 		expect(stub.messages[0]?.content).toContain("frontend.md");
 		expect(stub.messages[0]?.content).toContain('activated-by="src/new.ts"');
 		const warn = notifications.find((n) =>
@@ -726,7 +726,7 @@ describe("extension entry", () => {
 		expect(event.systemPromptOptions.sections[RULES_SECTION]).toBeUndefined();
 	});
 
-	it("activation message carries fenced scoped bodies and hides nothing", async () => {
+	it("activation message carries fenced scoped bodies and stays hidden", async () => {
 		const { project } = await setupBothTrees();
 		const stub = createStub();
 		entry(toExtensionAPI(stub));
@@ -747,9 +747,8 @@ describe("extension entry", () => {
 		);
 		expect(stub.messages).toHaveLength(1);
 		expect(stub.messages[0]?.customType).toBe("pi-rules.activated");
-		// An ordinary message: visible in the terminal and in session exports.
-		expect(stub.messages[0]?.display).toBe(true);
-		expect(stub.messages[0]?.options?.triggerTurn).toBe(false);
+		// Hidden from the terminal and default export view; still model-facing.
+		expect(stub.messages[0]?.display).toBe(false);
 		expect(stub.messages[0]?.content).toContain("```xml");
 		expect(stub.messages[0]?.content).toContain("Use hooks.");
 		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
