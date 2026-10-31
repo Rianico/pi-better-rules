@@ -754,3 +754,33 @@ describe("extension entry", () => {
 		expect(stub.messages[0]?.content).toContain('activated-by="src/app.ts"');
 	});
 });
+
+describe("agents: harness allowlist at load", () => {
+	it("loads only the rules whose allowlist names pi", async () => {
+		const home = await makeTree({
+			".pi/agent/rules/pi-only.md": `---\nagents: [pi]\n---\n# Pi only\n\nPi body.\n`,
+			".pi/agent/rules/claude-only.md": `---\nagents: [claude]\n---\n# Claude only\n\nClaude body.\n`,
+		});
+		const project = await makeTree({});
+		vi.stubEnv("HOME", home);
+		const stub = createStub();
+		entry(toExtensionAPI(stub));
+		const notifications: Notification[] = [];
+		await getHandler(stub, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			createCtx(project, notifications),
+		);
+		const report = notifications.find((n) => n.message.includes("rule(s)"));
+		expect(report?.message).toContain(
+			"pi-rules: 1 rule(s) — 1 unscoped, 0 scoped",
+		);
+		const event = startEvent();
+		await getHandler(stub, "before_agent_start")(event, createCtx(project, []));
+		expect(event.systemPromptOptions.sections[RULES_SECTION]).toContain(
+			"Pi body.",
+		);
+		expect(event.systemPromptOptions.sections[RULES_SECTION]).not.toContain(
+			"Claude body.",
+		);
+	});
+});

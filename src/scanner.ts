@@ -7,6 +7,8 @@
  * Scope-only model (issue 14): no `tier`. `paths:` absent = unscoped
  * (always-on, full content appended to the system prompt); `paths:` present
  * = scoped (full content injected as a visible session message on activation).
+ * Harness scoping (`agents:`, issue 340) filters the effective set at load:
+ * absent key = every harness, present allowlist = listed harnesses only.
  */
 import type { Dirent } from "node:fs";
 import {
@@ -25,6 +27,8 @@ export interface Rule {
 	abs: string;
 	scope: RuleScope;
 	paths?: string[] | undefined;
+	/** Harness allowlist from `agents:`; absent = load in every harness. */
+	agents?: string[] | undefined;
 	summary: string;
 	text: string;
 }
@@ -36,6 +40,12 @@ export const MAX_PATTERNS = 1000;
 /** Per-file hard-skip + whole-`paths:`-list byte budget (spec §4). */
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Harness id matched against each rule's `agents:` allowlist. pi is the only
+ * harness this extension runs under; a port overrides it through
+ * `ScanOptions.agent` rather than hard-coding a second literal.
+ */
+export const HARNESS_ID = "pi";
 export type Warn = (message: string) => void;
 
 const noop: Warn = () => {};
@@ -117,6 +127,83 @@ function parsePaths(frontmatter: string): string[] | undefined {
 	return items.length > 0 ? items : undefined;
 }
 
+/** Result of reading the optional `agents:` allowlist: an unparsable value
+ * reports `malformed` so the caller can warn and still load the rule. */
+export interface AgentsKey {
+	readonly agents: string[] | undefined;
+	readonly malformed: boolean;
+}
+
+const NO_AGENTS: AgentsKey = { agents: undefined, malformed: false };
+
+/** Trim, unquote, and lowercase one allowlist entry; "" means no id. */
+function normalizeAgent(raw: string): string {
+	return raw
+		.trim()
+		.replace(/^["']|["']$/g, "")
+		.trim()
+		.toLowerCase();
+}
+
+/** Append a normalized id, dropping blanks and duplicates (first wins). */
+function pushAgent(out: string[], raw: string): void {
+	const id = normalizeAgent(raw);
+	if (id !== "" && !out.includes(id)) out.push(id);
+}
+
+/**
+ * Parse the optional `agents:` frontmatter allowlist (harness scoping).
+ * One line: `agents: [pi, "claude"]`; block form: `agents:` then `- pi`
+ * lines. Ids are trimmed, unquoted, lowercased, and de-duplicated.
+ *
+ * Absent key → `{ agents: undefined }` (load everywhere, today's default).
+ * Explicit empty list → `[]`, which admits nobody.
+ * A scalar (`agents: pi`), bare (`agents:`), or unclosed (`agents: [pi`)
+ * value → `malformed`, so the caller loads everywhere and warns once instead
+ * of silently hiding the rule.
+ */
+export function parseAgents(frontmatter: string): AgentsKey {
+	const key = /^[ \t]*agents[ \t]*:/m.exec(frontmatter);
+	if (key === null) return NO_AGENTS;
+	const rest = frontmatter.slice(key.index + key[0].length);
+	const eol = rest.indexOf("\n");
+	const inlineValue = (eol < 0 ? rest : rest.slice(0, eol)).trim();
+	if (inlineValue.startsWith("[")) {
+		const open = rest.indexOf("[");
+		const close = rest.indexOf("]", open + 1);
+		if (close < 0) return { agents: undefined, malformed: true };
+		const items: string[] = [];
+		for (const part of rest.slice(open + 1, close).split(",")) {
+			pushAgent(items, part);
+		}
+		return { agents: items, malformed: false };
+	}
+	if (inlineValue !== "") return { agents: undefined, malformed: true };
+	const items: string[] = [];
+	for (const line of rest.split("\n").slice(1)) {
+		const trimmed = line.trim();
+		if (trimmed === "") continue;
+		const item = /^-\s*(.+)$/.exec(trimmed);
+		if (item === null) break; // next top-level key — end of the list
+		pushAgent(items, item[1] ?? "");
+	}
+	if (items.length === 0) return { agents: undefined, malformed: true };
+	return { agents: items, malformed: false };
+}
+
+/**
+ * Whether a parsed allowlist admits `agent`. An absent list (no key, or a
+ * malformed key the parser refused) admits every harness.
+ */
+export function admitsAgent(
+	agents: readonly string[] | undefined,
+	agent: string = HARNESS_ID,
+): boolean {
+	if (agents === undefined) return true;
+	const id = normalizeAgent(agent);
+	return id !== "" && agents.includes(id);
+}
+
 export interface ParseOptions {
 	maxFileBytes?: number;
 }
@@ -133,7 +220,6 @@ export function parseRule(
 	warn: Warn = noop,
 	opts: ParseOptions = {},
 ): Rule | null {
-	void warn;
 	const budget = opts.maxFileBytes ?? MAX_FILE_BYTES;
 	try {
 		if (statSync(abs).size > budget) return null;
@@ -144,6 +230,12 @@ export function parseRule(
 	const fm = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(raw);
 	const body = fm ? raw.slice(fm[0].length) : raw;
 	const paths = fm ? parsePaths(fm[1] ?? "") : undefined;
+	const agents: AgentsKey = fm ? parseAgents(fm[1] ?? "") : NO_AGENTS;
+	if (agents.malformed) {
+		warn(
+			`${rel}: malformed agents: frontmatter (expected a list of harness ids) — loading the rule everywhere`,
+		);
+	}
 	const heading = /^#\s+(.+)$/m.exec(body)?.[1]?.trim();
 	const firstLine = body
 		.split("\n")
@@ -159,6 +251,7 @@ export function parseRule(
 		summary,
 		text: body.trim(),
 	};
+	if (agents.agents !== undefined) rule.agents = agents.agents;
 	return rule;
 }
 
@@ -166,6 +259,8 @@ export interface ScanOptions {
 	warn?: Warn;
 	maxDepth?: number;
 	maxFileBytes?: number;
+	/** Harness id matched against `agents:`; defaults to `HARNESS_ID`. */
+	agent?: string;
 }
 
 export interface ScanResult {
@@ -191,6 +286,7 @@ export function scanRules(
 	const maxDepth = opts.maxDepth ?? MAX_WALK_DEPTH;
 	const parseOpts: ParseOptions =
 		opts.maxFileBytes === undefined ? {} : { maxFileBytes: opts.maxFileBytes };
+	const agent = opts.agent ?? HARNESS_ID;
 	const found = new Map<string, Rule>();
 	const scopes = [
 		[globalDir, "global"],
@@ -211,7 +307,12 @@ export function scanRules(
 			found.set(rel, rule);
 		}
 	}
-	return { rules: [...found.values()], warnings };
+	// Harness scoping applies to the effective set: when the project shadow
+	// excludes the running harness the rel disappears entirely (project wins).
+	const rules = [...found.values()].filter((rule) =>
+		admitsAgent(rule.agents, agent),
+	);
+	return { rules, warnings };
 }
 
 /** Load report line emitted at info level after scan (spec §1). */

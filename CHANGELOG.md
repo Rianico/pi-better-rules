@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+* **rules:** scope rules to harnesses via agents allowlist (#340)
+
 ### Bug Fixes
 
 * **rules:** hide scoped activation bodies in the TUI, warn only (#11)
