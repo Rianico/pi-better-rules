@@ -35,6 +35,31 @@ Appended to the triggering tool result (naming the matched file and the activati
 
 Inline list form also works: `paths: ["src/**/*.ts", "tests/**/*.ts"]`. Omit `paths:` for always-on rules; keep that set minimal — invariants only. Remember scoped rules are compaction-evictable, so anything that must survive compaction belongs in an unscoped rule. The whole `paths:` list per rule is budgeted at 1000 expanded patterns and 4 MiB — on breach the extension warns and falls back to literal matching for that rule.
 
+### Harness scoping — `agents:`
+
+`agents:` is an optional allowlist of harness ids. Absent, the rule loads in every harness — that is the default and every rule written before this key existed keeps working. Present, the rule loads only where the running harness id is listed; pi's id is `pi`.
+
+```markdown
+---
+agents: [claude, codex, agy]
+paths: ["src/**/*.ts"]
+---
+
+# Claude/codex/agy-only convention
+
+Not loaded in pi: the bash sanitizer owns this concern there.
+```
+
+| Frontmatter | Loads in pi? |
+| --- | --- |
+| absent | yes (default) |
+| `agents: [pi]` | yes |
+| `agents: [claude, codex, agy]` | no |
+| `agents: []` | no — an explicit empty allowlist admits nobody |
+| malformed (`agents: pi`, bare `agents:`, unclosed `agents: [pi`) | yes, plus one load-time warning naming the file |
+
+Ids are compared case-insensitively after trimming whitespace and quotes (`" PI "` equals `pi`), duplicates collapse, and the inline (`agents: [a, b]`) and block (`agents:` then `- a` lines) forms both work. `agents:` and `paths:` are independent: a listed harness keeps exactly the `paths:` activation it would have without `agents:`. When a harness and the rule disagree, prefer this key over a duplicate file — an excluded rule simply never enters the load, so it costs no prompt budget and no scan count.
+
 ## Shared rules via symlink
 
 Both trees resolve file and directory symlinks and follow them, so shared conventions can live in one place:

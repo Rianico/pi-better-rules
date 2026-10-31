@@ -268,3 +268,151 @@ describe("glob matrix", () => {
 		);
 	});
 });
+
+describe("agents: harness allowlist", () => {
+	function tree(base: string, files: Record<string, string>): string {
+		for (const [rel, content] of Object.entries(files)) {
+			const abs = join(base, rel);
+			mkdirSync(join(abs, ".."), { recursive: true });
+			writeFileSync(abs, content);
+		}
+		return base;
+	}
+
+	function scan(
+		files: Record<string, string>,
+		opts: { agent?: string; warns?: string[] } = {},
+	) {
+		const globalDir = tree(join(root, "g"), files);
+		const warn = (message: string) => opts.warns?.push(message);
+		return scanRules(globalDir, join(root, "p"), {
+			warn,
+			...(opts.agent === undefined ? {} : { agent: opts.agent }),
+		});
+	}
+
+	it("loads everywhere when the agents key is absent", () => {
+		const { rules } = scan({ "a.md": "# A\nbody\n" });
+		expect(rules.map((r) => r.rel)).toEqual(["a.md"]);
+		expect(rules[0]?.agents).toBeUndefined();
+	});
+
+	it("loads in pi when the allowlist names pi, frontmatter stripped", () => {
+		const warns: string[] = [];
+		const { rules } = scan(
+			{ "a.md": "---\nagents: [pi]\n---\n# A\nbody\n" },
+			{ warns },
+		);
+		expect(rules.map((r) => r.rel)).toEqual(["a.md"]);
+		expect(rules[0]?.agents).toEqual(["pi"]);
+		expect(rules[0]?.text).toBe("# A\nbody");
+		expect(warns).toEqual([]);
+	});
+
+	it("excludes a rule whose allowlist omits pi", () => {
+		const { rules } = scan({
+			"a.md": "---\nagents: [claude, codex, agy]\n---\n# A\n",
+		});
+		expect(rules).toEqual([]);
+		expect(formatLoadReport(rules)).toBe(
+			"pi-rules: 0 rule(s) — 0 unscoped, 0 scoped",
+		);
+	});
+
+	it("excludes a rule with an explicit empty allowlist", () => {
+		const { rules } = scan({ "a.md": "---\nagents: []\n---\n# A\n" });
+		expect(rules).toEqual([]);
+	});
+
+	it("excludes a rule whose block-form allowlist omits pi", () => {
+		const { rules } = scan({
+			"a.md": "---\nagents:\n  - claude\n---\n# A\n",
+		});
+		expect(rules).toEqual([]);
+	});
+
+	it("loads a malformed scalar agents value and warns once naming the file", () => {
+		const warns: string[] = [];
+		const { rules } = scan(
+			{ "bad.md": "---\nagents: pi\n---\n# Bad\n" },
+			{
+				warns,
+			},
+		);
+		expect(rules.map((r) => r.rel)).toEqual(["bad.md"]);
+		expect(rules[0]?.agents).toBeUndefined();
+		expect(warns.filter((w) => w.includes("bad.md"))).toHaveLength(1);
+	});
+
+	it("loads an unparsable agents list and warns once naming the file", () => {
+		const warns: string[] = [];
+		const { rules } = scan(
+			{ "bad.md": "---\nagents: [pi\n---\n# Bad\n" },
+			{
+				warns,
+			},
+		);
+		expect(rules.map((r) => r.rel)).toEqual(["bad.md"]);
+		expect(warns.filter((w) => w.includes("bad.md"))).toHaveLength(1);
+	});
+
+	it("loads a bare agents key as malformed rather than hiding the rule", () => {
+		const warns: string[] = [];
+		const { rules } = scan(
+			{ "bad.md": "---\nagents:\n---\n# Bad\n" },
+			{
+				warns,
+			},
+		);
+		expect(rules.map((r) => r.rel)).toEqual(["bad.md"]);
+		expect(warns.filter((w) => w.includes("bad.md"))).toHaveLength(1);
+	});
+
+	it("keeps paths activation unchanged when agents also lists pi", () => {
+		const { rules } = scan({
+			"a.md": '---\nagents: [pi]\npaths: ["src/**"]\n---\n# A\n',
+		});
+		expect(rules.map((r) => r.rel)).toEqual(["a.md"]);
+		expect(rules[0]?.paths).toEqual(["src/**"]);
+		expect(rules[0]?.agents).toEqual(["pi"]);
+	});
+
+	it("excludes a paths+agents rule for an unlisted harness", () => {
+		const { rules } = scan(
+			{ "a.md": '---\nagents: [claude]\npaths: ["src/**"]\n---\n# A\n' },
+			{ agent: "pi" },
+		);
+		expect(rules).toEqual([]);
+	});
+
+	it("normalizes case, whitespace, quotes, and duplicate entries", () => {
+		const { rules } = scan({
+			"a.md": "---\nagents: [ \" PI \" , pi, 'Pi' ]\n---\n# A\n",
+		});
+		expect(rules[0]?.agents).toEqual(["pi"]);
+	});
+
+	it("honours the scan agent option for another harness", () => {
+		const files = {
+			"pi-only.md": "---\nagents: [pi]\n---\n# Pi\n",
+			"claude-only.md": "---\nagents: [claude]\n---\n# Claude\n",
+		};
+		expect(scan(files, { agent: "claude" }).rules.map((r) => r.rel)).toEqual([
+			"claude-only.md",
+		]);
+		expect(scan(files, { agent: "pi" }).rules.map((r) => r.rel)).toEqual([
+			"pi-only.md",
+		]);
+	});
+
+	it("accumulates a project shadow that excludes the harness into nothing", () => {
+		const globalDir = tree(join(root, "g"), {
+			"shared.md": "---\nagents: [pi]\n---\n# Global\n",
+		});
+		const projectDir = tree(join(root, "p"), {
+			"shared.md": "---\nagents: [claude]\n---\n# Project\n",
+		});
+		const { rules } = scanRules(globalDir, projectDir);
+		expect(rules).toEqual([]);
+	});
+});
