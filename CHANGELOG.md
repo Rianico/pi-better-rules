@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-* **rules:** scope rules to harnesses via agents allowlist (#340)
+* **rules:** scope rules to harnesses via agents allowlist (#12)
 
 ### Bug Fixes
 
